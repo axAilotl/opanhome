@@ -8,7 +8,15 @@ build/
 *.pyc
 .env
 .artifacts/
+.agent/
+activate-hermes.sh
+hermes
 
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+*.db?*
+
+# Local beads runtime state
+.beads/interactions.jsonl
+.beads/dolt-monitor.pid.lock
