@@ -41,7 +41,14 @@ class ClientConfig:
     device_id: str
     device_name: str
     conversation_id: str | None
+    pactl_bin: str
+    mic_sensitivity_percent: int
+    mic_gain: float
+    capture_sample_rate: int
     sample_rate: int
+    input_channels: int
+    channel_strategy: str
+    capture_block_size: int
     block_size: int
     start_threshold: float
     continue_threshold: float
@@ -165,6 +172,7 @@ class PiRealtimeVoiceClient:
         self._playback_floor_samples = 0
 
     async def run(self) -> None:
+        await self._configure_audio_stack()
         self._ensure_capture_thread()
         while True:
             try:
@@ -343,6 +351,31 @@ class PiRealtimeVoiceClient:
                 return
             await self._ws.send(json.dumps(payload))
 
+    async def _configure_audio_stack(self) -> None:
+        if self._config.mic_sensitivity_percent <= 0:
+            return
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._config.pactl_bin,
+                "set-source-volume",
+                "@DEFAULT_SOURCE@",
+                f"{self._config.mic_sensitivity_percent}%",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            LOG.warning("pactl not found, leaving source volume unchanged")
+            return
+        _, stderr = await process.communicate()
+        if process.returncode == 0:
+            LOG.info("Set source volume to %s%%", self._config.mic_sensitivity_percent)
+            return
+        LOG.warning(
+            "Failed to set source volume to %s%%: %s",
+            self._config.mic_sensitivity_percent,
+            stderr.decode("utf-8", errors="ignore").strip(),
+        )
+
     def _ensure_capture_thread(self) -> None:
         if self._capture_thread is not None:
             return
@@ -352,9 +385,21 @@ class PiRealtimeVoiceClient:
     def _capture_microphone(self) -> None:
         microphone = sc.default_microphone()
         LOG.info("Using microphone: %s", microphone.name)
-        with microphone.recorder(samplerate=self._config.sample_rate, channels=1, blocksize=self._config.block_size) as mic:
+        with microphone.recorder(
+            samplerate=self._config.capture_sample_rate,
+            channels=self._config.input_channels,
+            blocksize=self._config.capture_block_size,
+        ) as mic:
             while not self._capture_stop.is_set():
-                frames = mic.record(self._config.block_size).reshape(-1)
+                frames = mic.record(self._config.capture_block_size).astype(np.float32)
+                if frames.ndim == 2:
+                    frames = _collapse_channels(frames, self._config.channel_strategy)
+                else:
+                    frames = frames.reshape(-1)
+                if self._config.mic_gain != 1.0:
+                    frames *= self._config.mic_gain
+                    np.clip(frames, -1.0, 1.0, out=frames)
+                frames = _resample_audio(frames, self._config.capture_sample_rate, self._config.sample_rate)
                 rms = float(np.sqrt(np.mean(np.square(frames, dtype=np.float32))))
                 audio = (np.clip(frames, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
                 item = AudioChunk(audio=audio, rms=rms, captured_at=time.monotonic())
@@ -414,17 +459,24 @@ def load_config() -> ClientConfig:
         device_id=os.getenv("DEVICE_ID", hostname),
         device_name=os.getenv("DEVICE_NAME", f"Opanhome Realtime Client ({hostname})"),
         conversation_id=os.getenv("CONVERSATION_ID") or None,
+        pactl_bin=os.getenv("PACTL_BIN", "/usr/bin/pactl"),
+        mic_sensitivity_percent=int(os.getenv("MIC_SENSITIVITY_PERCENT", "175")),
+        mic_gain=float(os.getenv("MIC_GAIN", "12.0")),
+        capture_sample_rate=int(os.getenv("MIC_CAPTURE_SAMPLE_RATE", "48000")),
         sample_rate=int(os.getenv("MIC_SAMPLE_RATE", "16000")),
+        input_channels=int(os.getenv("MIC_INPUT_CHANNELS", "2")),
+        channel_strategy=os.getenv("MIC_CHANNEL_STRATEGY", "best").strip().lower(),
+        capture_block_size=int(os.getenv("MIC_CAPTURE_BLOCK_SIZE", "1536")),
         block_size=int(os.getenv("MIC_BLOCK_SIZE", "512")),
-        start_threshold=float(os.getenv("VOICE_START_THRESHOLD", "0.010")),
-        continue_threshold=float(os.getenv("VOICE_CONTINUE_THRESHOLD", "0.008")),
+        start_threshold=float(os.getenv("VOICE_START_THRESHOLD", "0.020")),
+        continue_threshold=float(os.getenv("VOICE_CONTINUE_THRESHOLD", "0.010")),
         interrupt_ratio=float(os.getenv("VOICE_INTERRUPT_RATIO", "1.05")),
         start_chunks=int(os.getenv("VOICE_START_CHUNKS", "2")),
         min_speech_chunks=int(os.getenv("VOICE_MIN_SPEECH_CHUNKS", "3")),
-        initial_silence_timeout=float(os.getenv("VOICE_INITIAL_SILENCE_TIMEOUT_SECONDS", "1.5")),
-        end_silence_timeout=float(os.getenv("VOICE_END_SILENCE_TIMEOUT_SECONDS", "0.7")),
+        initial_silence_timeout=float(os.getenv("VOICE_INITIAL_SILENCE_TIMEOUT_SECONDS", "1.8")),
+        end_silence_timeout=float(os.getenv("VOICE_END_SILENCE_TIMEOUT_SECONDS", "0.9")),
         max_turn_seconds=float(os.getenv("VOICE_MAX_TURN_SECONDS", "20")),
-        preroll_chunks=int(os.getenv("VOICE_PREROLL_CHUNKS", "20")),
+        preroll_chunks=int(os.getenv("VOICE_PREROLL_CHUNKS", "32")),
         reconnect_delay=float(os.getenv("RECONNECT_DELAY_SECONDS", "2.0")),
         ffplay_bin=os.getenv("FFPLAY_BIN", "/usr/bin/ffplay"),
         ffplay_log_level=os.getenv("FFPLAY_LOG_LEVEL", "error"),
@@ -461,6 +513,35 @@ def _encode_audio(data: bytes) -> str:
 
 def _decode_audio(value: str) -> bytes:
     return base64.b64decode(value) if value else b""
+
+
+def _collapse_channels(frames: np.ndarray, strategy: str) -> np.ndarray:
+    if frames.ndim != 2:
+        return frames.reshape(-1)
+    if strategy == "left":
+        return frames[:, 0]
+    if strategy == "right":
+        return frames[:, min(1, frames.shape[1] - 1)]
+    if strategy == "average":
+        return frames.mean(axis=1)
+    channel_rms = np.sqrt(np.mean(np.square(frames), axis=0, dtype=np.float32))
+    return frames[:, int(np.argmax(channel_rms))]
+
+
+def _resample_audio(frames: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+    if from_rate == to_rate or frames.size == 0:
+        return frames
+    if from_rate % to_rate == 0:
+        factor = from_rate // to_rate
+        trimmed = frames[: frames.size - (frames.size % factor)]
+        if trimmed.size == 0:
+            return frames
+        return trimmed.reshape(-1, factor).mean(axis=1)
+    duration = frames.size / float(from_rate)
+    target_samples = max(1, int(round(duration * to_rate)))
+    source_positions = np.linspace(0.0, 1.0, num=frames.size, endpoint=False, dtype=np.float32)
+    target_positions = np.linspace(0.0, 1.0, num=target_samples, endpoint=False, dtype=np.float32)
+    return np.interp(target_positions, source_positions, frames).astype(np.float32)
 
 
 if __name__ == "__main__":
