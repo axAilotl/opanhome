@@ -23,7 +23,7 @@ export interface HubConfig {
   port: number;
   deepgramApiKey: string;
   elevenlabsApiKey: string;
-  elevenlabsVoiceId?: string;
+  elevenlabsVoiceId: string;
   elevenlabsModelId: string;
   artifactsRoot: string;
   psfn: PsfnRuntimeConfig;
@@ -88,7 +88,7 @@ export function loadHubConfig(projectRoot: string): HubConfig {
     port: Number.parseInt(process.env.REALTIME_VOICE_PORT || "8787", 10),
     deepgramApiKey: required("DEEPGRAM_API_KEY"),
     elevenlabsApiKey: required("ELEVENLABS_API_KEY"),
-    elevenlabsVoiceId: optional("ELEVENLABS_VOICE_ID"),
+    elevenlabsVoiceId: required("ELEVENLABS_VOICE_ID"),
     elevenlabsModelId: process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5",
     artifactsRoot: resolvePath(projectRoot, process.env.ARTIFACT_ROOT || ".artifacts/runtime-ts"),
     psfn,

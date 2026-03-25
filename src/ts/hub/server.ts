@@ -44,7 +44,7 @@ export class RealtimeHubServer {
     this.tts = new ElevenLabsStream(
       config.elevenlabsApiKey,
       config.elevenlabsModelId,
-      config.elevenlabsVoiceId || "pNInz6obpgDQGcFmaJgB",
+      config.elevenlabsVoiceId,
     );
   }
 

@@ -2,7 +2,8 @@ import type { ConversationMessage } from "./session-store.js";
 import type { PsfnRuntimeConfig } from "../shared/env.js";
 
 const DEFAULT_SYSTEM_PROMPT =
-  "Respond in one short, spoken-friendly sentence unless the user explicitly asks for more. "
+  "Reply as plain spoken dialogue only, in one short sentence unless the user explicitly asks for more. "
+  + "Do not use roleplay actions, stage directions, emotes, asterisks, markdown, narration, or scene-setting. "
   + "Do not call tools. Do not add preambles, summaries, or extra reassurance.";
 
 export class PsfnModelAdapter {
