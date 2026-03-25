@@ -34,19 +34,19 @@ No Home Assistant is in the runtime path.
 
 ```text
 Pi-class realtime client
-  <-> websocket voice server in this repo
-      -> Deepgram live STT websocket
-      -> Hermes conversation runtime
-      -> ElevenLabs streaming TTS websocket
-  <-> streamed text/audio chunks back to device
+  -> continuous pcm audio over one websocket
+  -> hub-side persistent Deepgram live session
+  -> Hermes conversation runtime
+  -> ElevenLabs streaming TTS
+  <- audio-init / audio-end / audio chunks
+  <- explicit interrupt-event / bot-speak-end handshake
 
 ESPHome device / linux-voice-assistant / ESP32 fallback
-  <-> aioesphomeapi client in this repo
-      -> Deepgram live STT websocket
-      -> Hermes conversation runtime
-      -> ElevenLabs streaming TTS websocket
-      -> local HTTP audio stream server
-  <-> streamed announcement playback back to device
+  -> ESPHome Native API session in the Python hub
+  -> Deepgram live STT websocket
+  -> Hermes conversation runtime
+  -> ElevenLabs streaming TTS websocket
+  <- announcement/media playback over the ESPHome route
 ```
 
 ## Current Status
@@ -54,16 +54,24 @@ ESPHome device / linux-voice-assistant / ESP32 fallback
 Implemented:
 
 - TypeScript websocket hub for Pi-class clients
-- TypeScript Pi client with local preroll, local playback ownership, and explicit interrupt
+- TypeScript Pi client with continuous mic streaming, local playback ownership, and explicit interrupt
 - explicit ALSA device routing and local playback ducking on Pi-class hardware
+- persistent Deepgram websocket for STT on both paths
+- persistent ElevenLabs websocket for streamed TTS on both paths
+- Hermes-compatible conversation runtime driven from Hermes config/env
+- reference-style handshake on the TS path:
+  `audio-init`, `audio-end`, `bot-speaking`, `bot-speak-end`, `interrupt-event`
+- server-side utterance boundaries on the TS path driven by Deepgram live results instead of client-side turn gating
 - ESPHome fallback transport kept intact on the Python side
 - `hub probe` for metadata, entities, services, and state subscription
 - `hub transport-spike` for raw ESPHome transport capture and artifact logging
-- persistent Deepgram websocket for STT
-- persistent ElevenLabs websocket for streamed TTS
-- Hermes-compatible conversation runtime driven from Hermes config/env
-- silence timeout, max-turn timeout, and reply timeout handling
 - local artifact capture under `.artifacts/runtime/` and `.artifacts/runtime-ts/`
+
+Currently working:
+
+- the TypeScript smoke harness succeeds end-to-end against the rebuilt realtime hub
+- the Pi 5 client path is the primary path to extend first
+- the ESPHome/Python path remains available as the fallback for stock devices
 
 Current intent:
 
@@ -134,6 +142,12 @@ Run the TypeScript Pi client locally:
 
 ```bash
 npm run pi:ts
+```
+
+Run the TypeScript smoke test against the realtime hub:
+
+```bash
+npm run smoke:ts
 ```
 
 Apply the current `linux-voice-assistant` fork patch used for ESPHome fallback interrupt/follow-up behavior:
@@ -226,7 +240,9 @@ Top-tier path:
 
 - custom TypeScript realtime websocket client for Pi-class devices
 - one persistent connection
-- explicit interrupt semantics
+- continuous outbound mic audio instead of client-opened turns
+- explicit `interrupt-event` / `bot-speak-end` semantics
+- Deepgram-driven utterance boundaries on the hub
 - streamed assistant text and audio back to the client
 - local device-owned playback and ducking
 - current Pi-class deployment uses this path and has `linux-voice-assistant` disabled
@@ -264,11 +280,13 @@ The dedicated Pi-class TypeScript client lives under [src/ts/pi-client](/mnt/sam
 It is the preferred path for devices that can afford a custom client, because it owns:
 
 - continuous local microphone capture
-- local preroll buffering
-- immediate playback stop on interrupt
+- immediate local playback stop on interrupt
+- local playback state instead of inferred server-side playback state
 - explicit ALSA device selection
 - local playback ducking before interrupt
 - direct websocket streaming back to the hub
+- the same interaction pattern the working reference client used:
+  stream audio continuously, stop playback locally first, then notify the hub
 
 Deploy with:
 
@@ -311,6 +329,7 @@ tests/
 
 - The current runtime path is global-Hermes-first, using Hermes-compatible config/env rather than a project-scoped Hermes install.
 - The repo now supports both a custom TypeScript realtime client path and an ESPHome fallback path.
+- The checked-in TypeScript path is the primary conversation path now.
 - Historical `.agent/` scaffolding exists in this repo, but it is not the main deployment target right now.
 - The Python fallback bridge still serves streamed audio on `AUDIO_SERVER_PORT` for announcement playback back to the device.
 - Turn artifacts are intentionally kept for debugging transport, latency, and failure recovery.
@@ -332,5 +351,6 @@ That keeps the current experiment useful without forcing a large Hermes core cha
 - support fully local STT providers behind the same adapter interface
 - support fully local TTS providers behind the same adapter interface
 - keep the dedicated Pi client as the top-tier path while retaining ESPHome fallback compatibility
+- harden the TS client interrupt path further with more real-device soak time
 - make the hub usable with a fully local speech stack before worrying about a polished upstream story
 - upstream the smallest Hermes-side streaming interface only after the bridge feels stable against the global deployment
