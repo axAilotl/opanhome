@@ -16,10 +16,12 @@ The hub in this repo does the heavy lifting:
 - accepts either a custom realtime voice client or an ESPHome voice device
 - streams microphone audio to Deepgram STT
 - applies turn endpointing, interrupt, and timeout logic
-- sends recognized text into Hermes
+- sends the current recognized text plus a stable conversation id into Hermes
 - streams Hermes text back into ElevenLabs TTS
 - returns assistant audio either as websocket chunks or ESPHome playback media
 - stores turn artifacts, transcripts, and reply metadata locally
+
+On the TypeScript realtime path, Hermes owns the actual conversation/session state. The hub is not supposed to rebuild or manage agent context itself; it relays the current turn and keeps satellite/runtime transport state.
 
 Device behavior depends on the path:
 
@@ -36,7 +38,7 @@ No Home Assistant is in the runtime path.
 Pi-class realtime client
   -> continuous pcm audio over one websocket
   -> hub-side persistent Deepgram live session
-  -> Hermes conversation runtime
+  -> Hermes conversation runtime with Hermes-owned session state
   -> ElevenLabs streaming TTS
   <- audio-init / audio-end / audio chunks
   <- explicit interrupt-event / bot-speak-end handshake
@@ -92,6 +94,15 @@ This repo is the orchestration layer that translates:
 - Hermes conversation execution
 
 That split is deliberate. It keeps ESPHome transport concerns out of Hermes core until the interface is proven stable, while still letting the bridge use the same global Hermes gateway/runtime configuration as a real deployment.
+
+For the TypeScript realtime path, that means the hub should stay a transport/orchestration layer:
+
+- satellite audio in
+- turn control and interrupt handling
+- current-turn text into Hermes
+- streamed text/audio back out
+
+Conversation memory and session continuity belong to Hermes, not to the hub.
 
 ## Commands
 
@@ -234,6 +245,8 @@ After that, fill in the remaining project-specific values in `.env`:
 
 At the moment there are no required Hermes source patches in this repo. The bridge is importing and using the existing global Hermes checkout in place.
 
+On the TypeScript realtime path, conversation continuity is also stored on the Hermes side under that global install. The hub passes a stable conversation id through to Hermes and does not maintain its own authoritative agent history.
+
 ## Transport Paths
 
 Top-tier path:
@@ -287,6 +300,8 @@ It is the preferred path for devices that can afford a custom client, because it
 - direct websocket streaming back to the hub
 - the same interaction pattern the working reference client used:
   stream audio continuously, stop playback locally first, then notify the hub
+
+The hub then relays the finalized user turn into Hermes, keeps the websocket/audio pipeline moving, and leaves the actual conversation/session state inside Hermes.
 
 Deploy with:
 
