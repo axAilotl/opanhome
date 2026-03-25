@@ -6,7 +6,7 @@ import {
   encodeAudioChunk,
   type HubToClientMessage,
 } from "../shared/protocol.js";
-import { takeFlushChunk } from "../shared/text.js";
+import { sanitizeSpokenText, takeFlushChunk } from "../shared/text.js";
 import { AlsaVolumeController } from "./alsa-volume.js";
 import { AmicaBridge } from "./amica-bridge.js";
 import { StreamingAudioPlayer } from "./audio-player.js";
@@ -420,6 +420,9 @@ export class PiRealtimeClient {
       if (!flushText) {
         break;
       }
+      if (!sanitizeSpokenText(flushText)) {
+        continue;
+      }
       this.assistantTextSegments.push(flushText);
       this.assistantTextHasStarted = true;
     }
@@ -429,12 +432,19 @@ export class PiRealtimeClient {
     const remainder = this.assistantPendingText.trim();
     this.assistantPendingText = "";
     if (remainder) {
+      if (!sanitizeSpokenText(remainder)) {
+        return;
+      }
       this.assistantTextSegments.push(remainder);
       this.assistantTextHasStarted = true;
       return;
     }
 
-    if (this.assistantTextSegments.length === 0 && finalText.trim()) {
+    if (
+      this.assistantTextSegments.length === 0 &&
+      finalText.trim() &&
+      sanitizeSpokenText(finalText)
+    ) {
       this.assistantTextSegments.push(finalText.trim());
       this.assistantTextHasStarted = true;
     }

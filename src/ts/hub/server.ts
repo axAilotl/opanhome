@@ -26,7 +26,7 @@ import {
 import { ElevenLabsStream } from "./elevenlabs-stream.js";
 import { PsfnModelAdapter } from "./psfn-model.js";
 import { SessionStore } from "./session-store.js";
-import { takeFlushChunk } from "../shared/text.js";
+import { sanitizeSpokenText, takeFlushChunk } from "../shared/text.js";
 
 export class RealtimeHubServer {
   private readonly httpServer = http.createServer((_, response) => {
@@ -293,12 +293,16 @@ class RealtimeConnection {
         if (this.replyAbort || replyId !== this.replySequence) {
           break;
         }
+        const spokenSegmentText = sanitizeSpokenText(segmentText);
+        if (!spokenSegmentText) {
+          continue;
+        }
         await this.send({
           type: "text",
           data: "audio-init",
         });
         let emittedAudio = false;
-        for await (const audioChunk of this.tts.streamText(singleValueStream(segmentText))) {
+        for await (const audioChunk of this.tts.streamText(singleValueStream(spokenSegmentText))) {
           if (this.replyAbort || replyId !== this.replySequence) {
             break;
           }

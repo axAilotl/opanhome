@@ -42,6 +42,21 @@ export function takeFlushChunk(
   return { flushText: flushText || null, remainder };
 }
 
+export function sanitizeSpokenText(input: string): string {
+  return input
+    .replace(/\*{1,2}[^*]+\*{1,2}/g, " ")
+    .replace(/[\u{1F600}-\u{1F64F}]/gu, "")
+    .replace(/[\u{1F300}-\u{1F5FF}]/gu, "")
+    .replace(/[\u{1F680}-\u{1F6FF}]/gu, "")
+    .replace(/[\u{1F1E0}-\u{1F1FF}]/gu, "")
+    .replace(/ :\)/gu, " ")
+    .replace(/ :D/gu, " ")
+    .replace(/^:\)/gu, "")
+    .replace(/^:D/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function sentenceBoundary(input: string): number | null {
   for (let index = 0; index < input.length; index += 1) {
     const char = input[index];
