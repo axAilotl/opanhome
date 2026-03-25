@@ -1,14 +1,25 @@
 import type { ChildProcessByStdio } from "node:child_process";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import type { Readable, Writable } from "node:stream";
 
-export class StreamingAudioPlayer {
-  private process: ChildProcessByStdio<Writable, null, Readable> | null = null;
+export interface PlayerClosedEvent {
+  graceful: boolean;
+}
 
-  constructor(private readonly command: string[]) {}
+export class StreamingAudioPlayer extends EventEmitter<{
+  closed: [PlayerClosedEvent];
+}> {
+  private process: ChildProcessByStdio<Writable, null, Readable> | null = null;
+  private finishing = false;
+
+  constructor(private readonly command: string[]) {
+    super();
+  }
 
   start(): void {
     this.stop();
+    this.finishing = false;
     const [bin, ...args] = this.command;
     this.process = spawn(bin as string, args, {
       stdio: ["pipe", "ignore", "pipe"],
@@ -18,6 +29,12 @@ export class StreamingAudioPlayer {
       if (message) {
         console.error(`[player] ${message}`);
       }
+    });
+    this.process.on("close", () => {
+      const graceful = this.finishing;
+      this.process = null;
+      this.finishing = false;
+      this.emit("closed", { graceful });
     });
   }
 
@@ -32,6 +49,7 @@ export class StreamingAudioPlayer {
     if (!this.process || !this.process.stdin.writable) {
       return;
     }
+    this.finishing = true;
     this.process.stdin.end();
   }
 
@@ -39,7 +57,7 @@ export class StreamingAudioPlayer {
     if (!this.process) {
       return;
     }
+    this.finishing = false;
     this.process.kill("SIGKILL");
-    this.process = null;
   }
 }

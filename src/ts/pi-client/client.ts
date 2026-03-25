@@ -19,6 +19,7 @@ export class PiRealtimeClient {
   private turnActive = false;
   private assistantActive = false;
   private assistantAudioActive = false;
+  private playbackActive = false;
   private speechStarted = false;
   private userSpeaking = false;
   private turnStartedAt = 0;
@@ -31,12 +32,21 @@ export class PiRealtimeClient {
   private ambientSamples = 0;
   private playbackFloor = 0;
   private playbackSamples = 0;
+  private interruptCandidateChunks = 0;
+  private interruptDucked = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly config: PiClientConfig) {
     this.player = new StreamingAudioPlayer(config.outputCommand);
     this.capture = new AudioCapture(config.inputCommand, config.micGain);
     this.ducking = config.ducking ? new AlsaVolumeController(config.ducking) : null;
+    this.player.on("closed", ({ graceful }) => {
+      this.playbackActive = false;
+      if (!this.turnActive) {
+        void this.ducking?.restore();
+      }
+      console.log(`playback.closed graceful=${String(graceful)}`);
+    });
     this.capture.on("audio", (chunk) => {
       void this.handleChunk(chunk);
     });
@@ -106,6 +116,7 @@ export class PiRealtimeClient {
       case "assistant.audio.start":
         this.assistantActive = true;
         this.assistantAudioActive = true;
+        this.playbackActive = true;
         this.resetPlaybackFloor();
         this.player.start();
         console.log("assistant.audio.start");
@@ -117,19 +128,17 @@ export class PiRealtimeClient {
       case "assistant.audio.end":
         this.assistantAudioActive = false;
         this.player.finish();
-        void this.ducking?.restore();
         console.log("assistant.audio.end");
         process.stdout.write("\n");
         return;
       case "assistant.end":
         this.assistantActive = false;
-        this.assistantAudioActive = false;
-        void this.ducking?.restore();
         console.log(`assistant.end text=${JSON.stringify(message.text)}`);
         return;
       case "assistant.interrupted":
         this.assistantActive = false;
         this.assistantAudioActive = false;
+        this.playbackActive = false;
         this.player.stop();
         void this.ducking?.restore();
         return;
@@ -156,18 +165,48 @@ export class PiRealtimeClient {
     this.updateAmbientFloor(chunk.rms);
 
     const now = Date.now();
-    let threshold = Math.max(this.config.startThreshold, this.ambientFloor * this.config.ambientStartRatio);
-    const interrupting = this.assistantActive || this.assistantAudioActive;
-    if (interrupting) {
-      threshold = Math.max(threshold, this.playbackFloor * this.config.interruptRatio);
-    }
-
+    const interrupting = this.playbackActive || this.assistantActive || this.assistantAudioActive;
+    const threshold = Math.max(this.config.startThreshold, this.ambientFloor * this.config.ambientStartRatio);
+    const interruptThreshold = Math.max(
+      this.config.continueThreshold,
+      this.config.startThreshold * 0.75,
+      this.ambientFloor * 1.15,
+    );
     const voiceHit = chunk.rms >= this.config.continueThreshold;
     const startHit = chunk.rms >= threshold;
+    const interruptHit = interrupting && chunk.rms >= interruptThreshold;
     const wasUserSpeaking = this.userSpeaking;
 
-    if (interrupting && (startHit || this.userSpeaking)) {
-      void this.ducking?.duck();
+    if (interrupting && !this.turnActive) {
+      if (interruptHit) {
+        if (!this.interruptDucked) {
+          this.interruptDucked = true;
+          void this.ducking?.duck();
+        }
+        if (this.interruptCandidateChunks === 0) {
+          console.log(
+            `interrupt.candidate rms=${chunk.rms.toFixed(4)} threshold=${interruptThreshold.toFixed(4)}`,
+          );
+        }
+        this.interruptCandidateChunks += 1;
+        this.userSpeaking = true;
+        this.lastVoiceActivityAt = now;
+        if (this.interruptCandidateChunks >= Math.max(1, this.config.startChunks)) {
+          console.log(
+            `speech.start rms=${chunk.rms.toFixed(4)} threshold=${interruptThreshold.toFixed(4)} interrupting=true`,
+          );
+          await this.beginTurn(true);
+          this.interruptCandidateChunks = 0;
+        }
+      } else if (this.userSpeaking && (now - this.lastVoiceActivityAt) >= this.config.releaseMs) {
+        this.userSpeaking = false;
+        this.interruptCandidateChunks = 0;
+        if (this.interruptDucked) {
+          this.interruptDucked = false;
+          void this.ducking?.restore();
+        }
+      }
+      return;
     }
 
     if (startHit || (this.userSpeaking && voiceHit)) {
@@ -240,6 +279,7 @@ export class PiRealtimeClient {
       this.player.stop();
       this.assistantActive = false;
       this.assistantAudioActive = false;
+      this.playbackActive = false;
       this.resetPlaybackFloor();
       this.send({ type: "interrupt" });
     }
@@ -273,6 +313,11 @@ export class PiRealtimeClient {
     this.speechStarted = false;
     this.pendingSilence = [];
     this.userSpeaking = false;
+    this.interruptCandidateChunks = 0;
+    if (this.interruptDucked) {
+      this.interruptDucked = false;
+      void this.ducking?.restore();
+    }
     this.lastVoiceActivityAt = 0;
     this.turnStartedAt = 0;
     this.lastSpeechAt = 0;
@@ -337,6 +382,7 @@ export class PiRealtimeClient {
     this.turnActive = false;
     this.assistantActive = false;
     this.assistantAudioActive = false;
+    this.playbackActive = false;
     this.speechStarted = false;
     this.userSpeaking = false;
     this.turnStartedAt = 0;
@@ -344,6 +390,8 @@ export class PiRealtimeClient {
     this.lastVoiceActivityAt = 0;
     this.activationChunks = 0;
     this.speechChunks = 0;
+    this.interruptCandidateChunks = 0;
+    this.interruptDucked = false;
     this.pendingSilence = [];
     this.preroll.length = 0;
     this.ambientFloor = 0;
