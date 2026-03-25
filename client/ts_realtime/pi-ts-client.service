@@ -1,7 +1,8 @@
 [Unit]
 Description=Opanhome TypeScript Realtime Voice Client
-After=network-online.target sound.target
-Wants=network-online.target
+After=network-online.target sound.target lightdm.service
+Wants=network-online.target lightdm.service
+PartOf=lightdm.service
 
 [Service]
 Type=simple
