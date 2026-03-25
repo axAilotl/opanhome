@@ -125,9 +125,9 @@ export function loadPiClientConfig(projectRoot: string): PiClientConfig {
   const amicaBridge = loadAmicaBridgeConfig();
 
   return {
-    hubUrl: process.env.HUB_WS_URL || "ws://192.168.1.220:8787/",
-    deviceId: process.env.DEVICE_ID || os.hostname(),
-    deviceName: process.env.DEVICE_NAME || `Opanhome TS Client (${os.hostname()})`,
+    hubUrl: required("HUB_WS_URL"),
+    deviceId: required("DEVICE_ID"),
+    deviceName: required("DEVICE_NAME"),
     conversationId: optional("CONVERSATION_ID"),
     amicaBridge,
     control: loadPiClientControlConfig(),
@@ -165,13 +165,8 @@ export function loadPiClientConfig(projectRoot: string): PiClientConfig {
 function loadAmicaBridgeConfig(): AmicaBridgeConfig | null {
   const endpointUrl = optional("AMICA_BRIDGE_URL");
   const token = optional("AMICA_BRIDGE_TOKEN");
-  const ownerMode = process.env.AMICA_BRIDGE_OWNER_MODE?.trim() === "true";
-  const requestTimeoutMs = Number.parseInt(
-    process.env.AMICA_BRIDGE_TIMEOUT_MS || "5000",
-    10,
-  );
 
-  if (!endpointUrl && !token && !ownerMode && !process.env.AMICA_BRIDGE_TIMEOUT_MS) {
+  if (!endpointUrl && !token) {
     return null;
   }
   if (!endpointUrl) {
@@ -181,6 +176,11 @@ function loadAmicaBridgeConfig(): AmicaBridgeConfig | null {
     throw new Error("Missing required environment variable: AMICA_BRIDGE_TOKEN");
   }
 
+  const ownerMode = process.env.AMICA_BRIDGE_OWNER_MODE?.trim() === "true";
+  const requestTimeoutMs = Number.parseInt(
+    process.env.AMICA_BRIDGE_TIMEOUT_MS || "5000",
+    10,
+  );
   const normalizedUrl = new URL(endpointUrl).toString();
   if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs < 0) {
     throw new Error("AMICA_BRIDGE_TIMEOUT_MS must be a non-negative integer");

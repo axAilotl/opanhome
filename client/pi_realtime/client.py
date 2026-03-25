@@ -9,7 +9,6 @@ import logging
 import os
 from pathlib import Path
 from queue import Empty, Full, Queue
-import socket
 import sys
 import threading
 import time
@@ -453,35 +452,52 @@ class PiRealtimeVoiceClient:
 
 
 def load_config() -> ClientConfig:
-    hostname = socket.gethostname()
     return ClientConfig(
-        hub_url=os.getenv("HUB_WS_URL", "ws://192.168.1.220:8787/"),
-        device_id=os.getenv("DEVICE_ID", hostname),
-        device_name=os.getenv("DEVICE_NAME", f"Opanhome Realtime Client ({hostname})"),
-        conversation_id=os.getenv("CONVERSATION_ID") or None,
+        hub_url=_required_env("HUB_WS_URL"),
+        device_id=_required_env("DEVICE_ID"),
+        device_name=_required_env("DEVICE_NAME"),
+        conversation_id=_optional_env("CONVERSATION_ID"),
         pactl_bin=os.getenv("PACTL_BIN", "/usr/bin/pactl"),
         mic_sensitivity_percent=int(os.getenv("MIC_SENSITIVITY_PERCENT", "100")),
         mic_gain=float(os.getenv("MIC_GAIN", "1.0")),
-        capture_sample_rate=int(os.getenv("MIC_CAPTURE_SAMPLE_RATE", "48000")),
+        capture_sample_rate=int(os.getenv("MIC_CAPTURE_SAMPLE_RATE", "16000")),
         sample_rate=int(os.getenv("MIC_SAMPLE_RATE", "16000")),
-        input_channels=int(os.getenv("MIC_INPUT_CHANNELS", "2")),
+        input_channels=int(os.getenv("MIC_INPUT_CHANNELS", "1")),
         channel_strategy=os.getenv("MIC_CHANNEL_STRATEGY", "best").strip().lower(),
-        capture_block_size=int(os.getenv("MIC_CAPTURE_BLOCK_SIZE", "1536")),
+        capture_block_size=int(os.getenv("MIC_CAPTURE_BLOCK_SIZE", "512")),
         block_size=int(os.getenv("MIC_BLOCK_SIZE", "512")),
-        start_threshold=float(os.getenv("VOICE_START_THRESHOLD", "0.10")),
-        continue_threshold=float(os.getenv("VOICE_CONTINUE_THRESHOLD", "0.010")),
+        start_threshold=float(os.getenv("VOICE_START_THRESHOLD", "0.005")),
+        ambient_start_ratio=float(os.getenv("VOICE_AMBIENT_START_RATIO", "2.5")),
+        fast_start_ratio=float(os.getenv("VOICE_FAST_START_RATIO", "1.0")),
+        continue_threshold=float(os.getenv("VOICE_CONTINUE_THRESHOLD", "0.004")),
         interrupt_ratio=float(os.getenv("VOICE_INTERRUPT_RATIO", "1.0")),
-        start_chunks=int(os.getenv("VOICE_START_CHUNKS", "2")),
-        min_speech_chunks=int(os.getenv("VOICE_MIN_SPEECH_CHUNKS", "3")),
-        initial_silence_timeout=float(os.getenv("VOICE_INITIAL_SILENCE_TIMEOUT_SECONDS", "1.8")),
-        end_silence_timeout=float(os.getenv("VOICE_END_SILENCE_TIMEOUT_SECONDS", "0.9")),
+        start_chunks=int(os.getenv("VOICE_START_CHUNKS", "1")),
+        min_speech_chunks=int(os.getenv("VOICE_MIN_SPEECH_CHUNKS", "2")),
+        speech_release_seconds=float(os.getenv("VOICE_SPEECH_RELEASE_SECONDS", "0.18")),
+        initial_silence_timeout=float(os.getenv("VOICE_INITIAL_SILENCE_TIMEOUT_SECONDS", "1.4")),
+        end_silence_timeout=float(os.getenv("VOICE_END_SILENCE_TIMEOUT_SECONDS", "0.7")),
         max_turn_seconds=float(os.getenv("VOICE_MAX_TURN_SECONDS", "20")),
         preroll_chunks=int(os.getenv("VOICE_PREROLL_CHUNKS", "32")),
+        preroll_lead_chunks=int(os.getenv("VOICE_PREROLL_LEAD_CHUNKS", "4")),
         reconnect_delay=float(os.getenv("RECONNECT_DELAY_SECONDS", "2.0")),
         ffplay_bin=os.getenv("FFPLAY_BIN", "/usr/bin/ffplay"),
         ffplay_log_level=os.getenv("FFPLAY_LOG_LEVEL", "error"),
         ffplay_volume=float(os.getenv("PLAYBACK_VOLUME", "1.0")),
+        idle_log_interval=float(os.getenv("VOICE_IDLE_LOG_INTERVAL_SECONDS", "1.0")),
+        candidate_log_ratio=float(os.getenv("VOICE_CANDIDATE_LOG_RATIO", "0.75")),
     )
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name, "").strip()
+    return value or None
 
 
 def configure_logging() -> None:
