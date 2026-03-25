@@ -17,6 +17,7 @@ export class PiRealtimeClient {
   private readonly capture: AudioCapture;
   private readonly ducking: AlsaVolumeController | null;
   private readonly amicaBridge: AmicaBridge | null;
+  private micMuted = false;
   private ready = false;
   private playbackActive = false;
   private playbackGeneration = 0;
@@ -69,6 +70,19 @@ export class PiRealtimeClient {
   start(): void {
     this.capture.start();
     this.connect();
+  }
+
+  isMicMuted(): boolean {
+    return this.micMuted;
+  }
+
+  setMicMuted(muted: boolean): void {
+    this.micMuted = muted;
+    if (muted) {
+      this.userSpeaking = false;
+      this.lastVoiceActivityAt = 0;
+    }
+    console.log(`mic.muted=${String(this.micMuted)}`);
   }
 
   private connect(): void {
@@ -233,6 +247,11 @@ export class PiRealtimeClient {
 
   private async handleChunk(chunk: AudioChunk): Promise<void> {
     if (!this.ready) {
+      return;
+    }
+    if (this.micMuted) {
+      this.userSpeaking = false;
+      this.lastVoiceActivityAt = 0;
       return;
     }
 

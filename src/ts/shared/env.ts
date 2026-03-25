@@ -36,6 +36,7 @@ export interface PiClientConfig {
   deviceName: string;
   conversationId?: string;
   amicaBridge: AmicaBridgeConfig | null;
+  control: PiClientControlConfig | null;
   inputCommand: string[];
   outputCommand: string[];
   sampleRate: number;
@@ -63,6 +64,11 @@ export interface AmicaBridgeConfig {
   token: string;
   ownerMode: boolean;
   requestTimeoutMs: number;
+}
+
+export interface PiClientControlConfig {
+  bindHost: string;
+  port: number;
 }
 
 export function resolveProjectRoot(): string {
@@ -124,6 +130,7 @@ export function loadPiClientConfig(projectRoot: string): PiClientConfig {
     deviceName: process.env.DEVICE_NAME || `Opanhome TS Client (${os.hostname()})`,
     conversationId: optional("CONVERSATION_ID"),
     amicaBridge,
+    control: loadPiClientControlConfig(),
     inputCommand: splitCommand(
       process.env.AUDIO_INPUT_COMMAND ||
         `arecord -q -f S16_LE -r ${sampleRate} -c 1 -D ${inputDevice} -t raw`,
@@ -187,6 +194,33 @@ function loadAmicaBridgeConfig(): AmicaBridgeConfig | null {
   };
 }
 
+function loadPiClientControlConfig(): PiClientControlConfig | null {
+  const bindHost = optional("PI_CLIENT_CONTROL_BIND_HOST");
+  const portValue = optional("PI_CLIENT_CONTROL_PORT");
+
+  if (!bindHost && !portValue) {
+    return null;
+  }
+  if (!bindHost || !portValue) {
+    throw new Error(
+      "PI_CLIENT_CONTROL_BIND_HOST and PI_CLIENT_CONTROL_PORT must both be set",
+    );
+  }
+  if (!isLoopbackHost(bindHost)) {
+    throw new Error("PI_CLIENT_CONTROL_BIND_HOST must be a loopback address");
+  }
+
+  const port = Number.parseInt(portValue, 10);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error("PI_CLIENT_CONTROL_PORT must be a valid TCP port");
+  }
+
+  return {
+    bindHost,
+    port,
+  };
+}
+
 function resolvePath(projectRoot: string, value: string): string {
   const expanded = value.startsWith("~")
     ? path.join(os.homedir(), value.slice(1))
@@ -213,4 +247,8 @@ function optional(name: string): string | undefined {
 function splitCommand(command: string): string[] {
   const matches = command.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
   return matches.map((part) => part.replace(/^"(.*)"$/, "$1"));
+}
+
+function isLoopbackHost(value: string): boolean {
+  return value === "127.0.0.1" || value === "::1" || value === "localhost";
 }
