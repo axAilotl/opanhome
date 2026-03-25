@@ -17,6 +17,7 @@ export class PiRealtimeClient {
   private readonly ducking: AlsaVolumeController | null;
   private ready = false;
   private playbackActive = false;
+  private playbackGeneration = 0;
   private sentenceCompleted = false;
   private requireNewAudioInit = true;
   private botSpeakEndSent = false;
@@ -30,7 +31,11 @@ export class PiRealtimeClient {
     this.capture = new AudioCapture(config.inputCommand, config.micGain);
     this.ducking = config.ducking ? new AlsaVolumeController(config.ducking) : null;
 
-    this.player.on("closed", ({ graceful }) => {
+    this.player.on("closed", ({ graceful, generation }) => {
+      if (generation !== this.playbackGeneration) {
+        console.log(`playback.closed stale generation=${generation}`);
+        return;
+      }
       this.playbackActive = false;
       void this.ducking?.restore();
       if (graceful && this.sentenceCompleted && !this.botSpeakEndSent) {
@@ -147,7 +152,7 @@ export class PiRealtimeClient {
       this.sentenceCompleted = false;
       this.botSpeakEndSent = false;
       this.playbackActive = true;
-      this.player.start();
+      this.playbackGeneration = this.player.start();
       await this.ducking?.restore();
       this.send({
         type: "text",
@@ -220,6 +225,7 @@ export class PiRealtimeClient {
   private resetConversationState(): void {
     this.ready = false;
     this.playbackActive = false;
+    this.playbackGeneration = 0;
     this.sentenceCompleted = false;
     this.requireNewAudioInit = true;
     this.botSpeakEndSent = false;

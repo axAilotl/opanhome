@@ -5,37 +5,45 @@ import type { Readable, Writable } from "node:stream";
 
 export interface PlayerClosedEvent {
   graceful: boolean;
+  generation: number;
 }
 
 export class StreamingAudioPlayer extends EventEmitter<{
   closed: [PlayerClosedEvent];
 }> {
   private process: ChildProcessByStdio<Writable, null, Readable> | null = null;
-  private finishing = false;
+  private generation = 0;
+  private gracefulByGeneration = new Map<number, boolean>();
 
   constructor(private readonly command: string[]) {
     super();
   }
 
-  start(): void {
+  start(): number {
     this.stop();
-    this.finishing = false;
+    const generation = ++this.generation;
     const [bin, ...args] = this.command;
-    this.process = spawn(bin as string, args, {
+    const child = spawn(bin as string, args, {
       stdio: ["pipe", "ignore", "pipe"],
+      detached: true,
     });
-    this.process.stderr.on("data", (raw: Buffer) => {
+    this.process = child;
+    this.gracefulByGeneration.set(generation, false);
+    child.stderr.on("data", (raw: Buffer) => {
       const message = raw.toString("utf8").trim();
       if (message) {
         console.error(`[player] ${message}`);
       }
     });
-    this.process.on("close", () => {
-      const graceful = this.finishing;
-      this.process = null;
-      this.finishing = false;
-      this.emit("closed", { graceful });
+    child.on("close", () => {
+      if (this.process === child) {
+        this.process = null;
+      }
+      const graceful = this.gracefulByGeneration.get(generation) ?? false;
+      this.gracefulByGeneration.delete(generation);
+      this.emit("closed", { graceful, generation });
     });
+    return generation;
   }
 
   write(chunk: Buffer): void {
@@ -49,15 +57,30 @@ export class StreamingAudioPlayer extends EventEmitter<{
     if (!this.process || !this.process.stdin.writable) {
       return;
     }
-    this.finishing = true;
+    this.gracefulByGeneration.set(this.generation, true);
     this.process.stdin.end();
   }
 
   stop(): void {
-    if (!this.process) {
+    const child = this.process;
+    if (!child) {
       return;
     }
-    this.finishing = false;
-    this.process.kill("SIGKILL");
+    const generation = this.generation;
+    this.process = null;
+    this.gracefulByGeneration.set(generation, false);
+    try {
+      if (child.pid) {
+        process.kill(-child.pid, "SIGKILL");
+        return;
+      }
+    } catch {
+      // Fall back to killing the direct child when group kill is unavailable.
+    }
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Ignore teardown races.
+    }
   }
 }
