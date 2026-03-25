@@ -9,8 +9,7 @@ build/
 .env
 .artifacts/
 .agent/
-activate-hermes.sh
-hermes
+.agents/hermes/
 
 # Dolt database files (added by bd init)
 .dolt/
