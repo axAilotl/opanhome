@@ -1,8 +1,6 @@
-import fs from "node:fs";
 import http from "node:http";
-import path from "node:path";
 
-import WebSocket, { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer, type RawData } from "ws";
 
 import { AsyncQueue } from "../shared/async-queue.js";
 import type { HubConfig } from "../shared/env.js";
@@ -12,8 +10,19 @@ import {
   type ClientToHubMessage,
   type HubToClientMessage,
 } from "../shared/protocol.js";
-import { appendEvent, appendPcm, createArtifactTurn, finalizeWav, writeJson, type ArtifactTurn } from "./artifacts.js";
-import { DeepgramLiveTurn } from "./deepgram-live.js";
+import {
+  appendEvent,
+  appendPcm,
+  createArtifactTurn,
+  finalizeWav,
+  writeJson,
+  type ArtifactTurn,
+} from "./artifacts.js";
+import {
+  DeepgramRealtimeSession,
+  type TranscriptInterim,
+  type TranscriptResult,
+} from "./deepgram-live.js";
 import { ElevenLabsStream } from "./elevenlabs-stream.js";
 import { HermesModelAdapter } from "./hermes-model.js";
 import { SessionStore } from "./session-store.js";
@@ -68,8 +77,10 @@ class RealtimeConnection {
   private deviceName = "Opanhome TS Client";
   private sessionId = `realtime:${this.deviceId}`;
   private activeTurn: ArtifactTurn | null = null;
-  private sttTurn: DeepgramLiveTurn | null = null;
+  private sttSession: DeepgramRealtimeSession | null = null;
   private replyAbort = false;
+  private replySequence = 0;
+  private replyTask: Promise<void> | null = null;
   private messageChain: Promise<void> = Promise.resolve();
 
   constructor(
@@ -81,20 +92,12 @@ class RealtimeConnection {
   ) {}
 
   async run(): Promise<void> {
-    console.log("Realtime client connected");
-    await this.send({
-      type: "session.ready",
-      sessionId: this.sessionId,
-      deviceId: this.deviceId,
-      deviceName: this.deviceName,
-      audioFormat: "pcm_s16le_16000_mono_in/mp3_44100_out",
-    });
-
     this.socket.on("message", (raw) => {
-      if (typeof raw !== "string" && !(raw instanceof Buffer)) {
+      const json = decodeRawData(raw);
+      if (!json) {
         return;
       }
-      const payload = JSON.parse(String(raw)) as ClientToHubMessage;
+      const payload = JSON.parse(json) as ClientToHubMessage;
       this.messageChain = this.messageChain
         .then(() => this.handleMessage(payload))
         .catch((error) => {
@@ -103,6 +106,36 @@ class RealtimeConnection {
     });
     this.socket.on("close", () => {
       void this.cleanup();
+    });
+
+    this.sttSession = new DeepgramRealtimeSession(this.config.deepgramApiKey, 16000, {
+      onInterim: (event) => {
+        this.messageChain = this.messageChain
+          .then(() => this.handleInterim(event))
+          .catch((error) => {
+            console.error("Realtime interim handling failed:", error);
+          });
+      },
+      onUtterance: (event) => {
+        this.messageChain = this.messageChain
+          .then(() => this.handleUtterance(event))
+          .catch((error) => {
+            console.error("Realtime utterance handling failed:", error);
+          });
+      },
+      onError: (error) => {
+        console.error("Deepgram realtime session failed:", error);
+      },
+    });
+    await this.sttSession.start();
+
+    console.log("Realtime client connected");
+    await this.send({
+      type: "session.ready",
+      sessionId: this.sessionId,
+      deviceId: this.deviceId,
+      deviceName: this.deviceName,
+      audioFormat: "pcm_s16le_16000_mono_in/mp3_44100_out",
     });
   }
 
@@ -120,6 +153,10 @@ class RealtimeConnection {
           deviceId: this.deviceId,
           deviceName: this.deviceName,
         });
+        await this.send({
+          type: "status",
+          data: "call_initialized",
+        });
         return;
       case "ping":
         await this.send({ type: "pong", sentAt: message.sentAt });
@@ -128,128 +165,150 @@ class RealtimeConnection {
         await this.cancelReply("client_interrupt");
         await this.send({ type: "assistant.interrupted", sessionId: this.sessionId });
         return;
-      case "turn.start":
-        await this.startTurn();
+      case "text":
+        await this.handleTextSignal(message.data);
         return;
       case "audio":
         await this.handleAudio(decodeAudioChunk(message.audio));
         return;
+      case "turn.start":
       case "turn.end":
-        await this.finishTurn(message.reason);
         return;
       default:
-        await this.send({ type: "error", message: `Unsupported message type: ${String((message as { type?: string }).type || "")}` });
+        await this.send({
+          type: "error-event",
+          data: { message: `Unsupported message type: ${String((message as { type?: string }).type || "")}` },
+        });
     }
   }
 
-  private async startTurn(): Promise<void> {
-    await this.cancelReply("new_turn");
-    await this.cleanupActiveTurn();
-    const turn = createArtifactTurn(this.config.artifactsRoot, this.sessionId);
-    this.activeTurn = turn;
-    appendEvent(turn, "start", {
-      sessionId: this.sessionId,
-      turnId: turn.turnId,
-    });
-    this.sttTurn = new DeepgramLiveTurn(this.config.deepgramApiKey, 16000);
-    await this.sttTurn.start();
-    await this.send({
-      type: "turn.started",
-      sessionId: this.sessionId,
-      turnId: turn.turnId,
-    });
+  private async handleTextSignal(signal: string): Promise<void> {
+    if (signal === "interrupt-event") {
+      await this.cancelReply("client_interrupt");
+      return;
+    }
+    if (signal === "bot-speak-end") {
+      if (this.activeTurn) {
+        appendEvent(this.activeTurn, "client.bot_speak_end", {});
+      }
+      return;
+    }
+    if (signal === "bot-speaking") {
+      if (this.activeTurn) {
+        appendEvent(this.activeTurn, "client.bot_speaking", {});
+      }
+      return;
+    }
   }
 
   private async handleAudio(chunk: Buffer): Promise<void> {
-    if (!this.activeTurn || !this.sttTurn || chunk.length === 0) {
+    if (!this.sttSession || chunk.length === 0) {
       return;
     }
-    appendPcm(this.activeTurn, chunk);
-    this.sttTurn.sendAudio(chunk);
+    if (this.replyTask && !this.replyAbort) {
+      return;
+    }
+    const turn = this.ensureActiveTurn();
+    appendPcm(turn, chunk);
+    this.sttSession.sendAudio(chunk);
   }
 
-  private async finishTurn(reason: string): Promise<void> {
-    const turn = this.activeTurn;
-    const sttTurn = this.sttTurn;
-    this.activeTurn = null;
-    this.sttTurn = null;
-    if (!turn || !sttTurn) {
+  private async handleInterim(event: TranscriptInterim): Promise<void> {
+    if (!event.text.trim()) {
       return;
     }
-    const transcript = await sttTurn.finish();
+    const turn = this.ensureActiveTurn();
+    appendEvent(turn, "transcript.live", event);
+    await this.send({
+      type: "message",
+      data: {
+        role: "user",
+        content: event.text,
+        live: true,
+      },
+    });
+  }
+
+  private async handleUtterance(event: TranscriptResult): Promise<void> {
+    const turn = this.activeTurn ?? this.ensureActiveTurn();
+    this.activeTurn = null;
+
     finalizeWav(turn);
     appendEvent(turn, "stop", {
-      reason,
       bytesReceived: turn.bytesReceived,
       chunks: turn.chunks,
     });
-    appendEvent(turn, "transcript", transcript);
-    writeJson(turn.transcriptPath, transcript);
-    console.log(`transcript turn=${turn.turnId} latency_ms=${transcript.latencyMs} text=${JSON.stringify(transcript.text)}`);
-    await this.send({
-      type: "transcript.final",
-      sessionId: this.sessionId,
-      turnId: turn.turnId,
-      text: transcript.text,
-      latencyMs: transcript.latencyMs,
-      provider: transcript.provider,
-    });
-    if (!transcript.text.trim()) {
+    appendEvent(turn, "transcript", event);
+    writeJson(turn.transcriptPath, event);
+    console.log(`transcript turn=${turn.turnId} latency_ms=${event.latencyMs} text=${JSON.stringify(event.text)}`);
+
+    if (!event.text.trim()) {
       writeJson(turn.replyPath, {
         sessionId: this.sessionId,
         turnId: turn.turnId,
         status: "no_input",
-        reason,
-      });
-      await this.send({
-        type: "turn.no_input",
-        sessionId: this.sessionId,
-        turnId: turn.turnId,
-        reason,
       });
       return;
     }
-    this.sessions.append(this.sessionId, { role: "user", content: transcript.text });
-    await this.runReply(turn, transcript.text, reason);
+
+    await this.send({
+      type: "message",
+      data: {
+        role: "user",
+        content: event.text,
+        final: true,
+      },
+    });
+
+    if (this.replyTask && !this.replyAbort) {
+      appendEvent(turn, "ignored", { reason: "reply_in_progress" });
+      writeJson(turn.replyPath, {
+        sessionId: this.sessionId,
+        turnId: turn.turnId,
+        transcript: event.text,
+        status: "ignored_reply_in_progress",
+      });
+      return;
+    }
+
+    this.sessions.append(this.sessionId, { role: "user", content: event.text });
+    const task = this.runReply(turn, event.text);
+    this.replyTask = task;
+    await task.finally(() => {
+      if (this.replyTask === task) {
+        this.replyTask = null;
+      }
+    });
   }
 
-  private async runReply(turn: ArtifactTurn, transcript: string, reason: string): Promise<void> {
+  private async runReply(turn: ArtifactTurn, transcript: string): Promise<void> {
+    const replyId = ++this.replySequence;
     this.replyAbort = false;
     let responseText = "";
     const textQueue = new AsyncQueue<string>();
-    await this.send({
-      type: "assistant.start",
-      sessionId: this.sessionId,
-      turnId: turn.turnId,
-    });
 
     const audioTask = (async () => {
       let started = false;
       for await (const audioChunk of this.tts.streamText(textQueue)) {
-        if (this.replyAbort) {
+        if (this.replyAbort || replyId !== this.replySequence) {
           break;
         }
         if (!started) {
           started = true;
           await this.send({
-            type: "assistant.audio.start",
-            sessionId: this.sessionId,
-            turnId: turn.turnId,
-            mimeType: "audio/mpeg",
+            type: "text",
+            data: "audio-init",
           });
         }
         await this.send({
-          type: "assistant.audio.chunk",
-          sessionId: this.sessionId,
-          turnId: turn.turnId,
-          audio: encodeAudioChunk(audioChunk),
+          type: "audio",
+          data: encodeAudioChunk(audioChunk),
         });
       }
-      if (started) {
+      if (started && !this.replyAbort && replyId === this.replySequence) {
         await this.send({
-          type: "assistant.audio.end",
-          sessionId: this.sessionId,
-          turnId: turn.turnId,
+          type: "text",
+          data: "audio-end",
         });
       }
     })();
@@ -258,42 +317,45 @@ class RealtimeConnection {
       const history = this.sessions.getHistory(this.sessionId);
       const stream = this.agent.streamReply({ history, userText: transcript });
       for await (const delta of stream) {
-        if (this.replyAbort) {
+        if (this.replyAbort || replyId !== this.replySequence) {
           break;
         }
         responseText += delta;
         textQueue.push(delta);
         await this.send({
-          type: "assistant.text",
-          sessionId: this.sessionId,
-          turnId: turn.turnId,
-          delta,
+          type: "message",
+          data: {
+            role: "assistant",
+            content: delta,
+            live: true,
+          },
         });
       }
       textQueue.close();
       await audioTask;
 
-      if (this.replyAbort) {
-        await this.send({ type: "assistant.interrupted", sessionId: this.sessionId });
+      if (this.replyAbort || replyId !== this.replySequence) {
+        appendEvent(turn, "reply.cancel", { reason: "client_interrupt" });
         return;
       }
 
       responseText = responseText.trim();
       this.sessions.append(this.sessionId, { role: "assistant", content: responseText });
       appendEvent(turn, "reply", { text: responseText });
-      console.log(`reply turn=${turn.turnId} text=${JSON.stringify(responseText)}`);
       writeJson(turn.replyPath, {
         sessionId: this.sessionId,
         turnId: turn.turnId,
         transcript,
         response: responseText,
-        reason,
       });
+      console.log(`reply turn=${turn.turnId} text=${JSON.stringify(responseText)}`);
       await this.send({
-        type: "assistant.end",
-        sessionId: this.sessionId,
-        turnId: turn.turnId,
-        text: responseText,
+        type: "message",
+        data: {
+          role: "assistant",
+          content: responseText,
+          final: true,
+        },
       });
     } catch (error) {
       textQueue.close();
@@ -304,28 +366,43 @@ class RealtimeConnection {
         transcript,
         error: String(error),
       });
-      await this.send({ type: "error", message: String(error) });
+      await this.send({
+        type: "error-event",
+        data: {
+          message: String(error),
+        },
+      });
     }
   }
 
   private async cancelReply(reason: string): Promise<void> {
     this.replyAbort = true;
-    if (reason && this.activeTurn) {
+    this.replySequence += 1;
+    if (this.activeTurn) {
       appendEvent(this.activeTurn, "reply.cancel", { reason });
     }
   }
 
-  private async cleanupActiveTurn(): Promise<void> {
-    if (this.sttTurn) {
-      await this.sttTurn.abort();
-      this.sttTurn = null;
+  private ensureActiveTurn(): ArtifactTurn {
+    if (this.activeTurn) {
+      return this.activeTurn;
     }
-    this.activeTurn = null;
+    const turn = createArtifactTurn(this.config.artifactsRoot, this.sessionId);
+    appendEvent(turn, "start", {
+      sessionId: this.sessionId,
+      turnId: turn.turnId,
+    });
+    this.activeTurn = turn;
+    return turn;
   }
 
   private async cleanup(): Promise<void> {
     await this.cancelReply("connection_closed");
-    await this.cleanupActiveTurn();
+    this.activeTurn = null;
+    if (this.sttSession) {
+      await this.sttSession.close();
+      this.sttSession = null;
+    }
   }
 
   private async send(message: HubToClientMessage): Promise<void> {
@@ -334,4 +411,24 @@ class RealtimeConnection {
     }
     this.socket.send(JSON.stringify(message));
   }
+}
+
+function decodeRawData(raw: RawData): string | null {
+  if (typeof raw === "string") {
+    return raw;
+  }
+  if (Buffer.isBuffer(raw)) {
+    return raw.toString("utf8");
+  }
+  if (raw instanceof ArrayBuffer) {
+    return Buffer.from(raw).toString("utf8");
+  }
+  if (Array.isArray(raw)) {
+    return Buffer.concat(raw.map((item) => Buffer.isBuffer(item) ? item : Buffer.from(item))).toString("utf8");
+  }
+  if (ArrayBuffer.isView(raw)) {
+    const view = raw as Uint8Array;
+    return Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString("utf8");
+  }
+  return null;
 }

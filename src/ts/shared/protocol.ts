@@ -1,26 +1,23 @@
 export type ClientToHubMessage =
   | HelloMessage
-  | TurnStartMessage
   | AudioMessage
-  | TurnEndMessage
+  | TextSignalMessage
+  | PingMessage
   | InterruptMessage
-  | PingMessage;
+  | TurnStartMessage
+  | TurnEndMessage;
 
 export type HubToClientMessage =
   | SessionReadyMessage
   | HelloAckMessage
-  | TurnStartedMessage
-  | TranscriptFinalMessage
-  | AssistantStartMessage
-  | AssistantTextMessage
-  | AssistantAudioStartMessage
-  | AssistantAudioChunkMessage
-  | AssistantAudioEndMessage
-  | AssistantEndMessage
-  | AssistantInterruptedMessage
-  | TurnNoInputMessage
-  | ErrorMessage
-  | PongMessage;
+  | StatusMessage
+  | TextMessage
+  | AudioOutMessage
+  | MessageEvent
+  | ActionMessage
+  | ErrorEventMessage
+  | PongMessage
+  | AssistantInterruptedCompatMessage;
 
 export interface HelloMessage {
   type: "hello";
@@ -29,28 +26,33 @@ export interface HelloMessage {
   sessionId?: string;
 }
 
-export interface TurnStartMessage {
-  type: "turn.start";
-  interrupt?: boolean;
-}
-
 export interface AudioMessage {
   type: "audio";
   audio: string;
 }
 
-export interface TurnEndMessage {
-  type: "turn.end";
-  reason: string;
+export interface TextSignalMessage {
+  type: "text";
+  data: string;
+}
+
+export interface PingMessage {
+  type: "ping";
+  sentAt: number;
 }
 
 export interface InterruptMessage {
   type: "interrupt";
 }
 
-export interface PingMessage {
-  type: "ping";
-  sentAt: number;
+export interface TurnStartMessage {
+  type: "turn.start";
+  interrupt?: boolean;
+}
+
+export interface TurnEndMessage {
+  type: "turn.end";
+  reason: string;
 }
 
 export interface SessionReadyMessage {
@@ -68,76 +70,46 @@ export interface HelloAckMessage {
   deviceName: string;
 }
 
-export interface TurnStartedMessage {
-  type: "turn.started";
-  sessionId: string;
-  turnId: string;
+export interface StatusMessage {
+  type: "status";
+  data: string;
 }
 
-export interface TranscriptFinalMessage {
-  type: "transcript.final";
-  sessionId: string;
-  turnId: string;
-  text: string;
-  latencyMs: number;
-  provider: string;
+export interface TextMessage {
+  type: "text";
+  data: string;
 }
 
-export interface AssistantStartMessage {
-  type: "assistant.start";
-  sessionId: string;
-  turnId: string;
+export interface AudioOutMessage {
+  type: "audio";
+  data: string;
 }
 
-export interface AssistantTextMessage {
-  type: "assistant.text";
-  sessionId: string;
-  turnId: string;
-  delta: string;
+export interface MessageEvent {
+  type: "message";
+  data: {
+    role: "user" | "assistant";
+    content: string;
+    live?: boolean;
+    final?: boolean;
+  };
 }
 
-export interface AssistantAudioStartMessage {
-  type: "assistant.audio.start";
-  sessionId: string;
-  turnId: string;
-  mimeType: string;
+export interface ActionMessage {
+  type: "action";
+  data: "interrupt" | "pause-audio" | "play-audio";
 }
 
-export interface AssistantAudioChunkMessage {
-  type: "assistant.audio.chunk";
-  sessionId: string;
-  turnId: string;
-  audio: string;
+export interface ErrorEventMessage {
+  type: "error-event";
+  data: {
+    message: string;
+  };
 }
 
-export interface AssistantAudioEndMessage {
-  type: "assistant.audio.end";
-  sessionId: string;
-  turnId: string;
-}
-
-export interface AssistantEndMessage {
-  type: "assistant.end";
-  sessionId: string;
-  turnId: string;
-  text: string;
-}
-
-export interface AssistantInterruptedMessage {
+export interface AssistantInterruptedCompatMessage {
   type: "assistant.interrupted";
   sessionId: string;
-}
-
-export interface TurnNoInputMessage {
-  type: "turn.no_input";
-  sessionId: string;
-  turnId: string;
-  reason: string;
-}
-
-export interface ErrorMessage {
-  type: "error";
-  message: string;
 }
 
 export interface PongMessage {

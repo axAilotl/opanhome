@@ -12,12 +12,13 @@ const chunks = [];
 for (let index = 0; index < pcm.length; index += 2048) {
   chunks.push(pcm.subarray(index, index + 2048));
 }
+const silence = Buffer.alloc(2048, 0);
 
 const socket = new WebSocket(wsUrl);
 let transcript = "";
 let assistantText = "";
 let audioChunks = 0;
-let sent = false;
+let ready = false;
 const startedAt = Date.now();
 
 const timeout = setTimeout(() => {
@@ -36,10 +37,9 @@ socket.on("open", () => {
 
 socket.on("message", (raw) => {
   const message = JSON.parse(String(raw));
-  if (message.type === "hello.ack" && !sent) {
-    sent = true;
+  if (message.type === "status" && message.data === "call_initialized" && !ready) {
+    ready = true;
     void (async () => {
-      socket.send(JSON.stringify({ type: "turn.start" }));
       for (const chunk of chunks) {
         socket.send(JSON.stringify({
           type: "audio",
@@ -47,23 +47,31 @@ socket.on("message", (raw) => {
         }));
         await delay(64);
       }
-      socket.send(JSON.stringify({ type: "turn.end", reason: "smoke_test" }));
+      for (let index = 0; index < 18; index += 1) {
+        socket.send(JSON.stringify({
+          type: "audio",
+          audio: silence.toString("base64"),
+        }));
+        await delay(64);
+      }
     })();
     return;
   }
-  if (message.type === "transcript.final") {
-    transcript = message.text;
+  if (message.type === "message" && message.data.role === "user" && message.data.final) {
+    transcript = message.data.content;
     return;
   }
-  if (message.type === "assistant.text") {
-    assistantText += message.delta;
+  if (message.type === "message" && message.data.role === "assistant") {
+    assistantText = message.data.final
+      ? message.data.content
+      : `${assistantText}${message.data.content}`;
     return;
   }
-  if (message.type === "assistant.audio.chunk") {
+  if (message.type === "audio") {
     audioChunks += 1;
     return;
   }
-  if (message.type === "assistant.end") {
+  if (message.type === "text" && message.data === "audio-end") {
     clearTimeout(timeout);
     console.log(JSON.stringify({
       transcript,
@@ -74,7 +82,7 @@ socket.on("message", (raw) => {
     socket.close();
     return;
   }
-  if (message.type === "error") {
+  if (message.type === "error-event") {
     clearTimeout(timeout);
     console.error(JSON.stringify(message, null, 2));
     socket.close();
