@@ -314,9 +314,7 @@ class RealtimeConnection {
     })();
 
     try {
-      const history = this.sessions.getHistory(this.sessionId);
       const stream = this.agent.streamReply({
-        history,
         userText: transcript,
         conversationId: this.sessionId,
       });
