@@ -209,10 +209,10 @@ def _take_flush_chunk(
     chunk: str,
     *,
     has_started: bool,
-    first_words: int = 3,
-    first_chars: int = 24,
-    soft_limit: int = 80,
-    hard_limit: int = 140,
+    first_words: int = 2,
+    first_chars: int = 18,
+    soft_limit: int = 64,
+    hard_limit: int = 120,
 ) -> tuple[str | None, str]:
     if not chunk:
         return None, chunk
@@ -243,10 +243,10 @@ def _should_flush(
     chunk: str,
     *,
     has_started: bool = False,
-    first_words: int = 3,
-    first_chars: int = 24,
-    soft_limit: int = 80,
-    hard_limit: int = 140,
+    first_words: int = 2,
+    first_chars: int = 18,
+    soft_limit: int = 64,
+    hard_limit: int = 120,
 ) -> bool:
     flush_text, _ = _take_flush_chunk(
         chunk,

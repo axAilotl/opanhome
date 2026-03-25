@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from hub.adapters.agent.hermes_streaming import HermesStreamingProvider
+from hub.adapters.agent.psfn_streaming import PsfnStreamingProvider
 from hub.adapters.stt.deepgram_live import DeepgramLiveSTTProvider
 from hub.adapters.tts.elevenlabs_streaming import ElevenLabsStreamingTTS
 from hub.devices.esphome_session import ESPHomeSession
@@ -30,9 +30,12 @@ async def _run_esphome_runtime(
         voice_id=config.elevenlabs_voice_id,
         model_id=config.elevenlabs_model_id,
     )
-    agent = HermesStreamingProvider(
-        gateway_home=config.hermes_gateway_home,
-        model_name=config.hermes_model,
+    agent = PsfnStreamingProvider(
+        api_base_url=config.psfn_api_base_url,
+        api_key=config.psfn_api_key,
+        model_name=config.psfn_model,
+        author_id=config.psfn_author_id,
+        author_name=config.psfn_author_name,
     )
 
     try:
@@ -93,8 +96,11 @@ async def _run_realtime_runtime(
         elevenlabs_api_key=config.elevenlabs_api_key,
         elevenlabs_voice_id=config.elevenlabs_voice_id,
         elevenlabs_model_id=config.elevenlabs_model_id,
-        hermes_gateway_home=config.hermes_gateway_home,
-        hermes_model=config.hermes_model,
+        psfn_api_base_url=config.psfn_api_base_url,
+        psfn_api_key=config.psfn_api_key,
+        psfn_model=config.psfn_model,
+        psfn_author_id=config.psfn_author_id,
+        psfn_author_name=config.psfn_author_name,
     ):
         while True:
             await asyncio.sleep(3600)
@@ -112,8 +118,10 @@ async def _run_runtime(project_root: Path) -> None:
     session_cache = SessionCache(ttl=timedelta(seconds=config.session_ttl_seconds))
 
     typer.echo(f"Device transport: {config.device_transport}")
-    typer.echo(f"Hermes backend: {config.hermes_agent_backend}")
-    typer.echo(f"Hermes model: {config.hermes_model}")
+    typer.echo(f"PSFN API base: {config.psfn_api_base_url}")
+    typer.echo(f"PSFN model: {config.psfn_model}")
+    if config.psfn_author_id and config.psfn_author_name:
+        typer.echo(f"PSFN author assertion: {config.psfn_author_name} ({config.psfn_author_id})")
     typer.echo(f"Audio server: http://{config.audio_public_host}:{config.audio_port}/")
     if config.device_transport in {"realtime", "hybrid"}:
         realtime_host = config.realtime_target.public_host or config.realtime_target.bind_host

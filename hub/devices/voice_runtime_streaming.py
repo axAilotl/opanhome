@@ -15,7 +15,7 @@ import wave
 
 from aioesphomeapi.model import VoiceAssistantAudioSettings, VoiceAssistantEventType
 
-from hub.adapters.agent.hermes_streaming import HermesStreamingProvider
+from hub.adapters.agent.psfn_streaming import PsfnStreamingProvider
 from hub.adapters.stt.deepgram_live import DeepgramLiveSTTProvider
 from hub.adapters.tts.elevenlabs_streaming import ElevenLabsStreamingTTS
 from hub.devices.esphome_session import ESPHomeSession
@@ -52,7 +52,7 @@ class StreamingVoiceAssistantRuntime:
         *,
         session: ESPHomeSession,
         stt: DeepgramLiveSTTProvider,
-        agent: HermesStreamingProvider,
+        agent: PsfnStreamingProvider,
         tts: ElevenLabsStreamingTTS,
         audio_server: StaticAudioServer,
         session_cache: SessionCache,

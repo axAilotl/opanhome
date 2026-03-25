@@ -16,7 +16,7 @@ It is not an ESPHome voice satellite. It keeps one websocket open to the hub, ow
 From the repo root:
 
 ```bash
-PI_PASSWORD='<pi-password>' ./scripts/deploy-pi-realtime-client.sh 192.168.1.173
+PI_USER=<pi-user> PI_PASSWORD='<pi-password>' HUB_WS_URL=ws://<hub-host>:8787/ DEVICE_ID=<device-id> DEVICE_NAME=<device-name> ./scripts/deploy-pi-realtime-client.sh <pi-host>
 ```
 
 That script:

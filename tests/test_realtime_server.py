@@ -69,7 +69,7 @@ class _FakeTTS:
 @pytest.mark.anyio
 async def test_realtime_connection_streams_text_and_audio(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("hub.devices.realtime_server.DeepgramLiveSTTProvider", _FakeSTT)
-    monkeypatch.setattr("hub.devices.realtime_server.HermesStreamingProvider", _FakeAgent)
+    monkeypatch.setattr("hub.devices.realtime_server.PsfnStreamingProvider", _FakeAgent)
     monkeypatch.setattr("hub.devices.realtime_server.ElevenLabsStreamingTTS", _FakeTTS)
 
     websocket = _FakeWebSocket()
@@ -82,8 +82,11 @@ async def test_realtime_connection_streams_text_and_audio(monkeypatch, tmp_path:
         elevenlabs_api_key="el",
         elevenlabs_voice_id=None,
         elevenlabs_model_id="model",
-        hermes_gateway_home=tmp_path,
-        hermes_model="model",
+        psfn_api_base_url="http://127.0.0.1:3100/v1",
+        psfn_api_key=None,
+        psfn_model="model",
+        psfn_author_id=None,
+        psfn_author_name=None,
     )
 
     await connection._handle_message({"type": "hello", "device_id": "pi-test", "device_name": "Pi Test"})

@@ -50,18 +50,24 @@ class ClientConfig:
     capture_block_size: int
     block_size: int
     start_threshold: float
+    ambient_start_ratio: float
+    fast_start_ratio: float
     continue_threshold: float
     interrupt_ratio: float
     start_chunks: int
     min_speech_chunks: int
+    speech_release_seconds: float
     initial_silence_timeout: float
     end_silence_timeout: float
     max_turn_seconds: float
     preroll_chunks: int
+    preroll_lead_chunks: int
     reconnect_delay: float
     ffplay_bin: str
     ffplay_log_level: str
     ffplay_volume: float
+    idle_log_interval: float
+    candidate_log_ratio: float
 
 
 class StreamingAudioPlayer:
@@ -169,6 +175,14 @@ class PiRealtimeVoiceClient:
         self._activation_chunks = 0
         self._playback_floor = 0.0
         self._playback_floor_samples = 0
+        self._ambient_floor = 0.0
+        self._ambient_floor_samples = 0
+        self._last_idle_log_at = 0.0
+        self._last_candidate_log_at = 0.0
+        self._speech_started = False
+        self._pending_silence: list[AudioChunk] = []
+        self._user_speaking = False
+        self._last_voice_activity_at = 0.0
 
     async def run(self) -> None:
         await self._configure_audio_stack()
@@ -269,30 +283,53 @@ class PiRealtimeVoiceClient:
 
         self._preroll.append(chunk)
         self._update_playback_floor(chunk.rms)
+        self._update_ambient_floor(chunk.rms)
+        now = time.monotonic()
+
+        threshold = self._config.start_threshold
+        if self._ambient_floor > 0.0:
+            threshold = max(threshold, self._ambient_floor * self._config.ambient_start_ratio)
+        interrupting = self._assistant_active or self._assistant_audio_active
+        if interrupting:
+            threshold = max(threshold, self._playback_floor * self._config.interrupt_ratio)
+
+        voice_hit = chunk.rms >= self._config.continue_threshold
+        start_hit = chunk.rms >= threshold
+        fast_start_hit = chunk.rms >= (threshold * self._config.fast_start_ratio)
+        was_user_speaking = self._user_speaking
+        if start_hit or (self._user_speaking and voice_hit):
+            self._user_speaking = True
+            self._last_voice_activity_at = now
+        elif self._user_speaking and (now - self._last_voice_activity_at) >= self._config.speech_release_seconds:
+            self._user_speaking = False
 
         if not self._turn_active:
-            threshold = self._config.start_threshold
-            required_chunks = self._config.start_chunks
-            interrupting = self._assistant_active or self._assistant_audio_active
-            if interrupting:
-                threshold = max(threshold, self._playback_floor * self._config.interrupt_ratio)
-                required_chunks = 1
-            if chunk.rms >= threshold:
+            self._maybe_log_idle_metrics(chunk.rms, threshold, interrupting)
+            if start_hit:
                 self._activation_chunks += 1
+                self._maybe_log_candidate(chunk.rms, threshold, self._config.start_chunks, interrupting)
             else:
                 self._activation_chunks = 0
-            if self._activation_chunks >= required_chunks:
+            if (not was_user_speaking and self._user_speaking) and (
+                fast_start_hit or self._activation_chunks >= self._config.start_chunks or interrupting
+            ):
                 await self._begin_turn(interrupt=interrupting)
                 self._activation_chunks = 0
             return
 
-        await self._send_audio(chunk.audio)
-        now = time.monotonic()
-        if chunk.rms >= self._config.continue_threshold:
+        if self._user_speaking and voice_hit:
+            if self._pending_silence:
+                for pending in self._pending_silence:
+                    await self._send_audio(pending.audio)
+                self._pending_silence.clear()
+            await self._send_audio(chunk.audio)
             self._speech_chunks += 1
+            self._speech_started = True
             self._last_speech_at = now
+        elif self._speech_started:
+            self._pending_silence.append(chunk)
 
-        if self._speech_chunks == 0:
+        if not self._speech_started:
             if now - self._turn_started_at >= self._config.initial_silence_timeout:
                 await self._end_turn("initial_silence_timeout")
             return
@@ -320,14 +357,22 @@ class PiRealtimeVoiceClient:
         self._turn_active = True
         self._turn_started_at = time.monotonic()
         self._last_speech_at = self._turn_started_at
+        self._last_voice_activity_at = self._turn_started_at
         self._speech_chunks = 0
+        self._speech_started = False
+        self._pending_silence.clear()
 
-        buffered = list(self._preroll)
+        buffered = _slice_preroll(
+            list(self._preroll),
+            threshold=self._config.continue_threshold,
+            lead_chunks=self._config.preroll_lead_chunks,
+        )
         self._preroll.clear()
         for item in buffered:
             await self._send_audio(item.audio)
             if item.rms >= self._config.continue_threshold:
                 self._speech_chunks += 1
+                self._speech_started = True
                 self._last_speech_at = time.monotonic()
         LOG.info("Started turn with %s preroll chunks", len(buffered))
 
@@ -338,6 +383,10 @@ class PiRealtimeVoiceClient:
         LOG.info("Ended turn: %s", reason)
         self._turn_active = False
         self._speech_chunks = 0
+        self._speech_started = False
+        self._pending_silence.clear()
+        self._user_speaking = False
+        self._last_voice_activity_at = 0.0
         self._turn_started_at = 0.0
         self._last_speech_at = 0.0
 
@@ -383,7 +432,14 @@ class PiRealtimeVoiceClient:
 
     def _capture_microphone(self) -> None:
         microphone = sc.default_microphone()
-        LOG.info("Using microphone: %s", microphone.name)
+        LOG.info(
+            "Using microphone: %s (capture_rate=%s sample_rate=%s channels=%s capture_block=%s)",
+            microphone.name,
+            self._config.capture_sample_rate,
+            self._config.sample_rate,
+            self._config.input_channels,
+            self._config.capture_block_size,
+        )
         with microphone.recorder(
             samplerate=self._config.capture_sample_rate,
             channels=self._config.input_channels,
@@ -414,6 +470,43 @@ class PiRealtimeVoiceClient:
                     except Full:
                         continue
 
+    def _maybe_log_idle_metrics(self, rms: float, threshold: float, interrupting: bool) -> None:
+        now = time.monotonic()
+        if (now - self._last_idle_log_at) < self._config.idle_log_interval:
+            return
+        self._last_idle_log_at = now
+        LOG.info(
+            "Idle audio rms=%.4f ambient=%.4f playback=%.4f threshold=%.4f activation=%s interrupting=%s",
+            rms,
+            self._ambient_floor,
+            self._playback_floor,
+            threshold,
+            self._activation_chunks,
+            interrupting,
+        )
+
+    def _maybe_log_candidate(
+        self,
+        rms: float,
+        threshold: float,
+        required_chunks: int,
+        interrupting: bool,
+    ) -> None:
+        now = time.monotonic()
+        if rms < (threshold * self._config.candidate_log_ratio):
+            return
+        if (now - self._last_candidate_log_at) < 0.35:
+            return
+        self._last_candidate_log_at = now
+        LOG.info(
+            "Speech candidate rms=%.4f threshold=%.4f activation=%s/%s interrupting=%s",
+            rms,
+            threshold,
+            self._activation_chunks,
+            required_chunks,
+            interrupting,
+        )
+
     def _next_chunk(self) -> AudioChunk | None:
         try:
             return self._capture_queue.get(timeout=1.0)
@@ -437,6 +530,23 @@ class PiRealtimeVoiceClient:
         if rms < self._playback_floor * 0.85:
             self._playback_floor = (self._playback_floor * 0.98) + (rms * 0.02)
 
+    def _update_ambient_floor(self, rms: float) -> None:
+        if self._turn_active or self._assistant_audio_active:
+            return
+        if rms <= 0.0:
+            return
+        if self._ambient_floor_samples == 0:
+            self._ambient_floor = rms
+            self._ambient_floor_samples = 1
+            return
+        if self._ambient_floor_samples < 32:
+            self._ambient_floor = (self._ambient_floor * self._ambient_floor_samples + rms) / (
+                self._ambient_floor_samples + 1
+            )
+            self._ambient_floor_samples += 1
+            return
+        self._ambient_floor = (self._ambient_floor * 0.98) + (rms * 0.02)
+
     def _reset_playback_floor(self) -> None:
         self._playback_floor = 0.0
         self._playback_floor_samples = 0
@@ -446,8 +556,14 @@ class PiRealtimeVoiceClient:
         self._assistant_active = False
         self._assistant_audio_active = False
         self._speech_chunks = 0
+        self._speech_started = False
+        self._pending_silence.clear()
+        self._user_speaking = False
+        self._last_voice_activity_at = 0.0
         self._activation_chunks = 0
         self._preroll.clear()
+        self._ambient_floor = 0.0
+        self._ambient_floor_samples = 0
         self._reset_playback_floor()
 
 
@@ -558,6 +674,18 @@ def _resample_audio(frames: np.ndarray, from_rate: int, to_rate: int) -> np.ndar
     source_positions = np.linspace(0.0, 1.0, num=frames.size, endpoint=False, dtype=np.float32)
     target_positions = np.linspace(0.0, 1.0, num=target_samples, endpoint=False, dtype=np.float32)
     return np.interp(target_positions, source_positions, frames).astype(np.float32)
+
+
+def _slice_preroll(buffered: list[AudioChunk], *, threshold: float, lead_chunks: int) -> list[AudioChunk]:
+    first_voiced_index: int | None = None
+    for index, item in enumerate(buffered):
+        if item.rms >= threshold:
+            first_voiced_index = index
+            break
+    if first_voiced_index is None:
+        return []
+    start_index = max(0, first_voiced_index - max(0, lead_chunks))
+    return buffered[start_index:]
 
 
 if __name__ == "__main__":

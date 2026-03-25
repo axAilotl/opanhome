@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import socket
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 
 from hub.config import ESPHomeTarget, RealtimeTarget
 
@@ -52,10 +52,11 @@ class HubRuntimeConfig:
     elevenlabs_api_key: str
     elevenlabs_voice_id: str | None
     elevenlabs_model_id: str
-    hermes_agent_backend: str
-    hermes_home: Path
-    hermes_gateway_home: Path
-    hermes_model: str
+    psfn_api_base_url: str
+    psfn_api_key: str | None
+    psfn_model: str
+    psfn_author_id: str | None
+    psfn_author_name: str | None
     audio_bind_host: str
     audio_public_host: str
     audio_port: int
@@ -78,25 +79,6 @@ class HubRuntimeConfig:
 
 def load_runtime_config(project_root: Path) -> HubRuntimeConfig:
     project_env = project_root / ".env"
-    project_values = dotenv_values(project_env) if project_env.exists() else {}
-    hermes_home_hint = str(project_values.get("HERMES_HOME") or os.getenv("HERMES_HOME") or Path.home() / ".hermes")
-    default_hermes_home = _resolve_path(project_root, hermes_home_hint)
-    gateway_home_hint = str(
-        project_values.get("HERMES_GATEWAY_HOME") or os.getenv("HERMES_GATEWAY_HOME") or default_hermes_home
-    )
-    default_gateway_home = _resolve_path(
-        project_root,
-        gateway_home_hint,
-    )
-
-    seen_envs: set[Path] = set()
-    for env_path in (default_gateway_home / ".env", default_hermes_home / ".env"):
-        resolved = env_path.expanduser().resolve()
-        if resolved in seen_envs:
-            continue
-        seen_envs.add(resolved)
-        _load_optional_env(env_path, override=False)
-
     _load_optional_env(project_env, override=True)
 
     device_transport = os.getenv("DEVICE_TRANSPORT", "esphome").strip().lower()
@@ -104,6 +86,8 @@ def load_runtime_config(project_root: Path) -> HubRuntimeConfig:
         raise ValueError(f"Unsupported DEVICE_TRANSPORT: {device_transport}")
 
     esphome_target: ESPHomeTarget | None = None
+    detect_host: str | None = None
+    detect_port: int | None = None
     if device_transport in {"esphome", "hybrid"}:
         host = _required("ESPHOME_HOST")
         port = int(os.getenv("ESPHOME_PORT", "6053"))
@@ -117,24 +101,35 @@ def load_runtime_config(project_root: Path) -> HubRuntimeConfig:
             noise_psk=noise_psk,
             expected_name=expected_name,
         )
-    else:
-        host = os.getenv("ESPHOME_HOST", "8.8.8.8")
-        port = int(os.getenv("ESPHOME_PORT", "53"))
+        detect_host = host
+        detect_port = port
 
     audio_bind_host = os.getenv("AUDIO_SERVER_BIND_HOST", "0.0.0.0")
-    audio_public_host = os.getenv("AUDIO_PUBLIC_HOST") or detect_outbound_host(host, port)
+    configured_audio_public_host = os.getenv("AUDIO_PUBLIC_HOST") or None
     audio_port = int(os.getenv("AUDIO_SERVER_PORT", "8099"))
     realtime_bind_host = os.getenv("REALTIME_VOICE_BIND_HOST", "0.0.0.0")
     realtime_port = int(os.getenv("REALTIME_VOICE_PORT", "8787"))
-    realtime_public_host = os.getenv("REALTIME_VOICE_PUBLIC_HOST") or audio_public_host
+    configured_realtime_public_host = os.getenv("REALTIME_VOICE_PUBLIC_HOST") or None
+    if configured_audio_public_host:
+        audio_public_host = configured_audio_public_host
+    elif device_transport == "realtime":
+        if not configured_realtime_public_host:
+            raise ValueError(
+                "AUDIO_PUBLIC_HOST or REALTIME_VOICE_PUBLIC_HOST is required when DEVICE_TRANSPORT=realtime",
+            )
+        audio_public_host = configured_realtime_public_host
+    else:
+        assert detect_host is not None and detect_port is not None
+        audio_public_host = detect_outbound_host(detect_host, detect_port)
+    realtime_public_host = configured_realtime_public_host or audio_public_host
 
-    hermes_agent_backend = os.getenv("HERMES_AGENT_BACKEND", "subprocess").strip().lower()
-    hermes_home = _resolve_path(project_root, os.getenv("HERMES_HOME", str(Path.home() / ".hermes")))
-    hermes_gateway_home = _resolve_path(
-        project_root,
-        os.getenv("HERMES_GATEWAY_HOME", str(hermes_home)),
-    )
-    hermes_model = os.getenv("HERMES_MODEL", "moonshotai/kimi-k2.5")
+    psfn_api_base_url = os.getenv("PSFN_API_BASE_URL", "http://127.0.0.1:3100/v1").strip()
+    psfn_api_key = os.getenv("PSFN_API_KEY") or None
+    psfn_model = os.getenv("PSFN_MODEL", "psfn").strip()
+    psfn_author_id = os.getenv("PSFN_AUTHOR_ID") or None
+    psfn_author_name = os.getenv("PSFN_AUTHOR_NAME") or None
+    if bool(psfn_author_id) != bool(psfn_author_name):
+        raise ValueError("PSFN_AUTHOR_ID and PSFN_AUTHOR_NAME must both be set when either is configured")
     artifacts_root = _resolve_path(project_root, os.getenv("ARTIFACT_ROOT", ".artifacts/runtime"))
 
     return HubRuntimeConfig(
@@ -150,10 +145,11 @@ def load_runtime_config(project_root: Path) -> HubRuntimeConfig:
         elevenlabs_api_key=_required("ELEVENLABS_API_KEY"),
         elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID") or None,
         elevenlabs_model_id=os.getenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
-        hermes_agent_backend=hermes_agent_backend,
-        hermes_home=hermes_home,
-        hermes_gateway_home=hermes_gateway_home,
-        hermes_model=hermes_model,
+        psfn_api_base_url=psfn_api_base_url,
+        psfn_api_key=psfn_api_key,
+        psfn_model=psfn_model,
+        psfn_author_id=psfn_author_id,
+        psfn_author_name=psfn_author_name,
         audio_bind_host=audio_bind_host,
         audio_public_host=audio_public_host,
         audio_port=audio_port,

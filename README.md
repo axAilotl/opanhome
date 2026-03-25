@@ -1,13 +1,13 @@
 # Opanhome
 
-Dual-path voice hub for Hermes.
+Dual-path voice hub for PSFN.
 
-This repo is the middleware layer between voice endpoints and Hermes. It now has two device paths:
+This repo is the middleware layer between voice endpoints and PSFN. It now has two device paths:
 
 - a custom TypeScript realtime websocket path for Pi-class devices that can do smooth bidirectional conversation
 - an ESPHome Native API fallback path for stock ESPHome voice devices and `linux-voice-assistant`
 
-The current testing target is global Hermes deployment first. Treat this repo as a bridge into a normal `~/.hermes` install, not as a scoped Hermes environment.
+The current testing target is direct PSFN deployment first. Treat this repo as a bridge into the PSFN OpenAI-compatible API, not as a scoped local brain.
 
 ## What This Repo Does
 
@@ -16,12 +16,12 @@ The hub in this repo does the heavy lifting:
 - accepts either a custom realtime voice client or an ESPHome voice device
 - streams microphone audio to Deepgram STT
 - applies turn endpointing, interrupt, and timeout logic
-- sends the current recognized text plus a stable conversation id into Hermes
-- streams Hermes text back into ElevenLabs TTS
+- sends the current recognized text plus a stable conversation id into PSFN
+- streams PSFN text back into ElevenLabs TTS
 - returns assistant audio either as websocket chunks or ESPHome playback media
 - stores turn artifacts, transcripts, and reply metadata locally
 
-On the TypeScript realtime path, Hermes owns the actual conversation/session state. The hub is not supposed to rebuild or manage agent context itself; it relays the current turn and keeps satellite/runtime transport state.
+On the TypeScript realtime path, PSFN owns the actual conversation/session state. The hub keeps satellite/runtime transport state and relays the current turn.
 
 Device behavior depends on the path:
 
@@ -38,7 +38,7 @@ No Home Assistant is in the runtime path.
 Pi-class realtime client
   -> continuous pcm audio over one websocket
   -> hub-side persistent Deepgram live session
-  -> Hermes conversation runtime with Hermes-owned session state
+  -> PSFN conversation runtime
   -> ElevenLabs streaming TTS
   <- audio-init / audio-end / audio chunks
   <- explicit interrupt-event / bot-speak-end handshake
@@ -46,7 +46,7 @@ Pi-class realtime client
 ESPHome device / linux-voice-assistant / ESP32 fallback
   -> ESPHome Native API session in the Python hub
   -> Deepgram live STT websocket
-  -> Hermes conversation runtime
+  -> PSFN conversation runtime
   -> ElevenLabs streaming TTS websocket
   <- announcement/media playback over the ESPHome route
 ```
@@ -60,7 +60,7 @@ Implemented:
 - explicit ALSA device routing and local playback ducking on Pi-class hardware
 - persistent Deepgram websocket for STT on both paths
 - persistent ElevenLabs websocket for streamed TTS on both paths
-- Hermes-compatible conversation runtime driven from Hermes config/env
+- PSFN-compatible conversation runtime driven from PSFN config/env
 - reference-style handshake on the TS path:
   `audio-init`, `audio-end`, `bot-speaking`, `bot-speak-end`, `interrupt-event`
 - server-side utterance boundaries on the TS path driven by Deepgram live results instead of client-side turn gating
@@ -78,31 +78,31 @@ Currently working:
 Current intent:
 
 - make the voice loop feel fast and smooth enough for daily use
-- target the global Hermes deployment first so the end-to-end path is real
-- keep Hermes integration minimal so this can stay a sidecar first
-- upstream only the smallest useful Hermes seam later if it proves out
+- target the direct PSFN deployment first so the end-to-end path is real
+- keep the bridge thin so this can stay a sidecar first
+- upstream only the smallest useful bridge seam later if it proves out
 
 ## Why The Hub Exists
 
-Hermes is not talking directly to the satellite.
+PSFN is not talking directly to the satellite.
 
 This repo is the orchestration layer that translates:
 
 - custom realtime voice transport
 - ESPHome voice transport
 - realtime STT/TTS provider streams
-- Hermes conversation execution
+- PSFN conversation execution
 
-That split is deliberate. It keeps ESPHome transport concerns out of Hermes core until the interface is proven stable, while still letting the bridge use the same global Hermes gateway/runtime configuration as a real deployment.
+That split is deliberate. It keeps ESPHome transport concerns out of PSFN core until the interface is proven stable, while still letting the bridge use a direct PSFN deployment as the source of truth.
 
 For the TypeScript realtime path, that means the hub should stay a transport/orchestration layer:
 
 - satellite audio in
 - turn control and interrupt handling
-- current-turn text into Hermes
+- current-turn text into PSFN
 - streamed text/audio back out
 
-Conversation memory and session continuity belong to Hermes, not to the hub.
+Conversation memory and session continuity belong to PSFN, with the hub only maintaining transport-side continuity.
 
 ## Commands
 
@@ -136,10 +136,9 @@ Capture raw voice transport artifacts:
 uv run hub transport-spike --host <device-ip> --noise-psk <base64-psk>
 ```
 
-Bootstrap against the global Hermes install and run the Python fallback bridge:
+Bootstrap against the PSFN bridge config and run the Python fallback bridge:
 
 ```bash
-./scripts/use-global-hermes.sh
 uv run hub run
 ```
 
@@ -170,21 +169,12 @@ Apply the current `linux-voice-assistant` fork patch used for ESPHome fallback i
 Deploy the dedicated TypeScript Pi realtime client and disable `linux-voice-assistant` on that Pi:
 
 ```bash
-PI_PASSWORD='<pi-password>' ./scripts/deploy-ts-pi-client.sh <pi-host>
+PI_USER=<pi-user> PI_PASSWORD='<pi-password>' HUB_WS_URL=ws://<hub-host>:8787/ DEVICE_ID=<device-id> DEVICE_NAME=<device-name> ./scripts/deploy-ts-pi-client.sh <pi-host>
 ```
 
 ## Configuration
 
-Runtime config comes from:
-
-- project-local `.env`
-- global Hermes config under `~/.hermes`
-
-Load order is:
-
-- project `.env` is read first only for `HERMES_HOME` and `HERMES_GATEWAY_HOME` hints
-- `~/.hermes/.env` is then loaded as the shared Hermes/provider baseline
-- project `.env` is applied again last so bridge-specific overrides still win
+Runtime config comes from the project-local `.env`.
 
 Important settings for the TypeScript realtime path:
 
@@ -207,36 +197,24 @@ Important settings for the Python ESPHome fallback path:
 - `REALTIME_VOICE_BIND_HOST`, `REALTIME_VOICE_PORT`, `REALTIME_VOICE_PUBLIC_HOST`
 - `DEEPGRAM_API_KEY`
 - `ELEVENLABS_API_KEY`
-- `HERMES_AGENT_BACKEND`
-- `HERMES_GATEWAY_HOME`
-- `HERMES_HOME`
-- `HERMES_MODEL`
+- `PSFN_API_BASE_URL`
+- `PSFN_API_KEY`
+- `PSFN_MODEL`
+- optional `PSFN_AUTHOR_ID` and `PSFN_AUTHOR_NAME` if you need the hub to assert a specific PSFN-side author
 - `VOICE_REPLY_TIMEOUT_SECONDS`
 - `VOICE_ENDPOINTING_GRACE_SECONDS`
 - `VOICE_SILENCE_TIMEOUT_SECONDS`
 - `VOICE_MAX_TURN_SECONDS`
 
-## Testing With Global Hermes
+Realtime-only mode must set either `AUDIO_PUBLIC_HOST` or `REALTIME_VOICE_PUBLIC_HOST`. The hub no longer probes an outbound address when ESPHome is not in use.
 
-The bridge currently expects a normal global Hermes install at:
+## Testing With PSFN
 
-- `~/.hermes`
-- `~/.hermes/hermes-agent`
-- `~/.hermes/hermes-agent/venv/bin/python`
-
-To prepare this repo for that path, run:
+Set `PSFN_API_BASE_URL` and `PSFN_MODEL` in `.env`, then run:
 
 ```bash
-./scripts/use-global-hermes.sh
+uv run hub run
 ```
-
-That script:
-
-- verifies the global Hermes checkout and venv exist
-- verifies the gateway/runtime imports the bridge depends on
-- creates `.env` from `.env.example` if needed
-- rewrites the local project env to point at `~/.hermes`
-- leaves Hermes source untouched; there is no required Hermes patch in this repo right now
 
 After that, fill in the remaining project-specific values in `.env`:
 

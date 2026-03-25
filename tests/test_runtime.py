@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from hub.adapters.tts.elevenlabs_streaming import _should_flush, _take_flush_chunk
 from hub.media.http_audio import StaticAudioServer
 from hub.runtime import load_runtime_config
 
 
-def test_load_runtime_config_reads_global_hermes_and_project_env(tmp_path: Path, monkeypatch) -> None:
+def test_load_runtime_config_reads_psfn_and_project_env(tmp_path: Path, monkeypatch) -> None:
     for name in (
         "ESPHOME_HOST",
         "ESPHOME_PORT",
@@ -15,40 +17,35 @@ def test_load_runtime_config_reads_global_hermes_and_project_env(tmp_path: Path,
         "DEEPGRAM_API_KEY",
         "ELEVENLABS_API_KEY",
         "AUDIO_PUBLIC_HOST",
-        "HERMES_AGENT_BACKEND",
-        "HERMES_GATEWAY_HOME",
-        "HERMES_HOME",
+        "PSFN_API_BASE_URL",
+        "PSFN_API_KEY",
+        "PSFN_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
 
-    hermes_home = tmp_path / "global-hermes"
-    hermes_home.mkdir()
-    (hermes_home / ".env").write_text(
-        "DEEPGRAM_API_KEY=global-deepgram\n"
-        "ELEVENLABS_API_KEY=global-eleven\n",
-        encoding="utf-8",
-    )
     (tmp_path / ".env").write_text(
-        "ESPHOME_HOST=192.168.1.173\n"
+        "ESPHOME_HOST=esphome.example\n"
         "ESPHOME_PORT=6053\n"
         "ESPHOME_EXPECTED_NAME=Opanhome-Voice-Pi\n"
-        "AUDIO_PUBLIC_HOST=192.168.1.50\n"
-        "HERMES_AGENT_BACKEND=gateway\n"
-        f"HERMES_HOME={hermes_home}\n",
+        "AUDIO_PUBLIC_HOST=voice.example\n"
+        "DEEPGRAM_API_KEY=project-deepgram\n"
+        "ELEVENLABS_API_KEY=project-eleven\n"
+        "PSFN_API_BASE_URL=http://psfn.example:3100/v1\n"
+        "PSFN_MODEL=psfn\n",
         encoding="utf-8",
     )
 
     config = load_runtime_config(tmp_path)
 
     assert config.device_transport == "esphome"
-    assert config.esphome_target.host == "192.168.1.173"
+    assert config.esphome_target.host == "esphome.example"
     assert config.esphome_target.expected_name == "Opanhome-Voice-Pi"
-    assert config.deepgram_api_key == "global-deepgram"
-    assert config.elevenlabs_api_key == "global-eleven"
-    assert config.audio_public_host == "192.168.1.50"
-    assert config.hermes_agent_backend == "gateway"
-    assert config.hermes_gateway_home == hermes_home
-    assert config.hermes_home == hermes_home
+    assert config.deepgram_api_key == "project-deepgram"
+    assert config.elevenlabs_api_key == "project-eleven"
+    assert config.audio_public_host == "voice.example"
+    assert config.psfn_api_base_url == "http://psfn.example:3100/v1"
+    assert config.psfn_api_key is None
+    assert config.psfn_model == "psfn"
     assert config.elevenlabs_model_id == "eleven_flash_v2_5"
     assert config.reply_timeout_seconds == 30.0
     assert config.voice_initial_silence_timeout_seconds == 4.0
@@ -64,24 +61,21 @@ def test_load_runtime_config_supports_realtime_mode_without_esphome_target(tmp_p
         "DEEPGRAM_API_KEY",
         "ELEVENLABS_API_KEY",
         "AUDIO_PUBLIC_HOST",
-        "HERMES_GATEWAY_HOME",
-        "HERMES_HOME",
         "REALTIME_VOICE_PUBLIC_HOST",
+        "PSFN_API_BASE_URL",
+        "PSFN_API_KEY",
+        "PSFN_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
 
-    hermes_home = tmp_path / "global-hermes"
-    hermes_home.mkdir()
-    (hermes_home / ".env").write_text(
-        "DEEPGRAM_API_KEY=global-deepgram\n"
-        "ELEVENLABS_API_KEY=global-eleven\n",
-        encoding="utf-8",
-    )
     (tmp_path / ".env").write_text(
         "DEVICE_TRANSPORT=realtime\n"
-        "AUDIO_PUBLIC_HOST=192.168.1.50\n"
+        "AUDIO_PUBLIC_HOST=voice.example\n"
         "REALTIME_VOICE_PORT=9001\n"
-        f"HERMES_HOME={hermes_home}\n",
+        "DEEPGRAM_API_KEY=project-deepgram\n"
+        "ELEVENLABS_API_KEY=project-eleven\n"
+        "PSFN_API_BASE_URL=http://127.0.0.1:3100/v1\n"
+        "PSFN_MODEL=psfn\n",
         encoding="utf-8",
     )
 
@@ -90,7 +84,33 @@ def test_load_runtime_config_supports_realtime_mode_without_esphome_target(tmp_p
     assert config.device_transport == "realtime"
     assert config.esphome_target is None
     assert config.realtime_target.port == 9001
-    assert config.realtime_target.public_host == "192.168.1.50"
+    assert config.realtime_target.public_host == "voice.example"
+    assert config.psfn_api_base_url == "http://127.0.0.1:3100/v1"
+    assert config.psfn_model == "psfn"
+
+
+def test_load_runtime_config_requires_public_host_in_realtime_mode(tmp_path: Path, monkeypatch) -> None:
+    for name in (
+        "DEVICE_TRANSPORT",
+        "AUDIO_PUBLIC_HOST",
+        "REALTIME_VOICE_PUBLIC_HOST",
+        "DEEPGRAM_API_KEY",
+        "ELEVENLABS_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    (tmp_path / ".env").write_text(
+        "DEVICE_TRANSPORT=realtime\n"
+        "DEEPGRAM_API_KEY=project-deepgram\n"
+        "ELEVENLABS_API_KEY=project-eleven\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="AUDIO_PUBLIC_HOST or REALTIME_VOICE_PUBLIC_HOST is required when DEVICE_TRANSPORT=realtime",
+    ):
+        load_runtime_config(tmp_path)
 
 
 def test_static_audio_server_uses_public_host_for_urls(tmp_path: Path) -> None:

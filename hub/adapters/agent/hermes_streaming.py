@@ -209,7 +209,10 @@ def _load_runtime(gateway_home_value: str):
                         PLATFORM_HINTS.get("cli", ""),
                         runner._ephemeral_system_prompt,
                         context_prompt,
-                        "Respond in concise, spoken-friendly sentences. Do not call tools.",
+                        (
+                            "Respond in one short, spoken-friendly sentence unless the user explicitly asks for more. "
+                            "Do not call tools. Do not add preambles, summaries, or extra reassurance."
+                        ),
                     )
                     if part
                 ),
@@ -247,6 +250,10 @@ for raw_line in sys.stdin:
             model=payload["model_name"],
             messages=messages,
             stream=True,
+            max_tokens=80,
+            # Voice turns need visible text quickly. Reasoning-first streams can
+            # consume the response budget without yielding spoken content.
+            extra_body={"reasoning": {"enabled": False}},
         )
 
         full_text = ""

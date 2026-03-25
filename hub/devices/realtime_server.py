@@ -15,7 +15,7 @@ import wave
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from hub.adapters.agent.hermes_streaming import HermesStreamingProvider
+from hub.adapters.agent.psfn_streaming import PsfnStreamingProvider
 from hub.adapters.stt.deepgram_live import DeepgramLiveSTTProvider
 from hub.adapters.tts.elevenlabs_streaming import ElevenLabsStreamingTTS
 from hub.media.http_audio import StaticAudioServer
@@ -53,8 +53,11 @@ class _RealtimeConnection:
         elevenlabs_api_key: str,
         elevenlabs_voice_id: str | None,
         elevenlabs_model_id: str,
-        hermes_gateway_home: Path,
-        hermes_model: str,
+        psfn_api_base_url: str,
+        psfn_api_key: str | None,
+        psfn_model: str,
+        psfn_author_id: str | None,
+        psfn_author_name: str | None,
     ) -> None:
         self._websocket = websocket
         self._audio_server = audio_server
@@ -66,9 +69,12 @@ class _RealtimeConnection:
             voice_id=elevenlabs_voice_id,
             model_id=elevenlabs_model_id,
         )
-        self._agent = HermesStreamingProvider(
-            gateway_home=hermes_gateway_home,
-            model_name=hermes_model,
+        self._agent = PsfnStreamingProvider(
+            api_base_url=psfn_api_base_url,
+            api_key=psfn_api_key,
+            model_name=psfn_model,
+            author_id=psfn_author_id,
+            author_name=psfn_author_name,
         )
         self._device_id = f"client-{uuid.uuid4().hex[:8]}"
         self._device_name = "Realtime Voice Client"
@@ -178,9 +184,23 @@ class _RealtimeConnection:
             events_path=directory / "events.jsonl",
         )
         turn.pcm_path.touch()
+        try:
+            await self._stt.start_turn(self._session_id)
+        except Exception as exc:
+            _LOGGER.exception("Failed to start realtime STT turn")
+            with suppress(FileNotFoundError):
+                turn.pcm_path.unlink()
+            with suppress(OSError):
+                turn.directory.rmdir()
+            await self._send_json(
+                {
+                    "type": "error",
+                    "message": f"Failed to start speech recognition: {exc}",
+                }
+            )
+            return
         self._active_turn = turn
         self._session_cache.touch(self._session_id)
-        await self._stt.start_turn(self._session_id)
         self._append_event(
             turn,
             "start",
@@ -408,8 +428,11 @@ class RealtimeVoiceServer:
         elevenlabs_api_key: str,
         elevenlabs_voice_id: str | None,
         elevenlabs_model_id: str,
-        hermes_gateway_home: Path,
-        hermes_model: str,
+        psfn_api_base_url: str,
+        psfn_api_key: str | None,
+        psfn_model: str,
+        psfn_author_id: str | None,
+        psfn_author_name: str | None,
     ) -> None:
         self._host = host
         self._port = port
@@ -420,8 +443,11 @@ class RealtimeVoiceServer:
         self._elevenlabs_api_key = elevenlabs_api_key
         self._elevenlabs_voice_id = elevenlabs_voice_id
         self._elevenlabs_model_id = elevenlabs_model_id
-        self._hermes_gateway_home = hermes_gateway_home
-        self._hermes_model = hermes_model
+        self._psfn_api_base_url = psfn_api_base_url
+        self._psfn_api_key = psfn_api_key
+        self._psfn_model = psfn_model
+        self._psfn_author_id = psfn_author_id
+        self._psfn_author_name = psfn_author_name
         self._server = None
 
     async def __aenter__(self) -> "RealtimeVoiceServer":
@@ -451,8 +477,11 @@ class RealtimeVoiceServer:
             elevenlabs_api_key=self._elevenlabs_api_key,
             elevenlabs_voice_id=self._elevenlabs_voice_id,
             elevenlabs_model_id=self._elevenlabs_model_id,
-            hermes_gateway_home=self._hermes_gateway_home,
-            hermes_model=self._hermes_model,
+            psfn_api_base_url=self._psfn_api_base_url,
+            psfn_api_key=self._psfn_api_key,
+            psfn_model=self._psfn_model,
+            psfn_author_id=self._psfn_author_id,
+            psfn_author_name=self._psfn_author_name,
         )
         try:
             await connection.run()
