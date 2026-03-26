@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import WebSocket from "ws";
 
 import { AsyncQueue } from "../shared/async-queue.js";
-import { takeFlushChunk } from "../shared/text.js";
 
 export class ElevenLabsStream {
   private ws: WebSocket | null = null;
@@ -32,28 +31,14 @@ export class ElevenLabsStream {
     });
 
     const sender = (async () => {
-      let pending = "";
-      let hasStarted = false;
       for await (const delta of textStream) {
-        pending += delta;
-        while (true) {
-          const { flushText, remainder } = takeFlushChunk(pending, { hasStarted });
-          pending = remainder;
-          if (!flushText) {
-            break;
-          }
-          this.sendJson({
-            context_id: contextId,
-            text: flushText,
-            flush: true,
-          });
-          hasStarted = true;
+        const text = delta.trim();
+        if (!text) {
+          continue;
         }
-      }
-      if (pending.trim()) {
         this.sendJson({
           context_id: contextId,
-          text: pending.trim(),
+          text,
           flush: true,
         });
       }

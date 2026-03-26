@@ -36,6 +36,8 @@ export class PiRealtimeClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private messageChain: Promise<void> = Promise.resolve();
   private pendingOwnerSegments = 0;
+  private interruptSpeechStartedAt = 0;
+  private playbackStartedAt = 0;
 
   constructor(private readonly config: PiClientConfig) {
     this.player = new StreamingAudioPlayer(config.outputCommand);
@@ -199,6 +201,8 @@ export class PiRealtimeClient {
       }
       this.assistantTurnOpen = true;
       this.playbackActive = true;
+      this.playbackStartedAt = Date.now();
+      this.interruptSpeechStartedAt = 0;
       this.clearOwnerPlaybackTimer();
       if (!this.amicaBridge?.isOwnerMode()) {
         this.playbackGeneration = this.player.start();
@@ -277,11 +281,32 @@ export class PiRealtimeClient {
       this.userSpeaking = false;
     }
 
-    if (this.playbackActive && speech && now >= this.interruptingUntil) {
-      if (!this.amicaBridge?.isOwnerMode()) {
-        await this.ducking?.duck();
+    if (!this.playbackActive) {
+      this.interruptSpeechStartedAt = 0;
+    } else if (now >= this.interruptingUntil) {
+      const interruptThreshold = Math.max(
+        this.config.continueThreshold,
+        this.config.startThreshold * Math.max(1, this.config.interruptRatio),
+      );
+      if (chunk.rms > interruptThreshold) {
+        if (this.interruptSpeechStartedAt === 0) {
+          this.interruptSpeechStartedAt = now;
+        }
+      } else {
+        this.interruptSpeechStartedAt = 0;
       }
-      await this.detectInterrupt();
+
+      const sustainedInterrupt =
+        this.interruptSpeechStartedAt > 0 &&
+        (now - this.playbackStartedAt) >= 450 &&
+        (now - this.interruptSpeechStartedAt) >= Math.max(140, this.config.releaseMs);
+
+      if (sustainedInterrupt) {
+        if (!this.amicaBridge?.isOwnerMode()) {
+          await this.ducking?.duck();
+        }
+        await this.detectInterrupt();
+      }
     }
 
     this.send({
@@ -300,6 +325,8 @@ export class PiRealtimeClient {
     this.botSpeakEndSent = true;
     this.playbackActive = false;
     this.assistantTurnOpen = false;
+    this.playbackStartedAt = 0;
+    this.interruptSpeechStartedAt = 0;
     this.clearOwnerPlaybackTimer();
     this.pendingOwnerSegments = 0;
     this.resetAssistantTextState();
@@ -342,6 +369,8 @@ export class PiRealtimeClient {
     this.userSpeaking = false;
     this.lastVoiceActivityAt = 0;
     this.interruptingUntil = 0;
+    this.playbackStartedAt = 0;
+    this.interruptSpeechStartedAt = 0;
     this.clearOwnerPlaybackTimer();
     this.pendingOwnerSegments = 0;
     this.resetAssistantTextState();
@@ -371,6 +400,8 @@ export class PiRealtimeClient {
     this.sentenceCompleted = false;
     this.botSpeakEndSent = true;
     this.assistantTurnOpen = false;
+    this.playbackStartedAt = 0;
+    this.interruptSpeechStartedAt = 0;
     this.clearOwnerPlaybackTimer();
     this.pendingOwnerSegments = 0;
     void this.ducking?.restore();

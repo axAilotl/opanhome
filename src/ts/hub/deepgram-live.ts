@@ -25,6 +25,8 @@ export class DeepgramRealtimeSession {
   private readonly finalSegments: string[] = [];
   private interimText = "";
   private utteranceStartedAt = 0;
+  private readonly endpointingMs = parsePositiveInt(process.env.DEEPGRAM_ENDPOINTING_MS, 800);
+  private readonly utteranceEndMs = parsePositiveInt(process.env.DEEPGRAM_UTTERANCE_END_MS, 1800);
 
   constructor(
     private readonly apiKey: string,
@@ -41,8 +43,8 @@ export class DeepgramRealtimeSession {
       `&sample_rate=${this.sampleRate}` +
       "&channels=1" +
       "&interim_results=true" +
-      "&endpointing=300" +
-      "&utterance_end_ms=1000" +
+      `&endpointing=${this.endpointingMs}` +
+      `&utterance_end_ms=${this.utteranceEndMs}` +
       "&vad_events=true" +
       "&smart_format=true";
 
@@ -173,6 +175,11 @@ export class DeepgramRealtimeSession {
     this.interimText = "";
     this.utteranceStartedAt = 0;
   }
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const value = Number.parseInt(raw || "", 10);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 async function waitForOpen(ws: WebSocket): Promise<void> {

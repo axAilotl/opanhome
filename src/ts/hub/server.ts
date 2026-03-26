@@ -346,6 +346,10 @@ class RealtimeConnection {
         while (true) {
           const { flushText, remainder } = takeFlushChunk(pendingAudioText, {
             hasStarted: audioHasStarted,
+            firstWords: 4,
+            firstChars: 40,
+            softLimit: 140,
+            hardLimit: 220,
           });
           pendingAudioText = remainder;
           if (!flushText) {
