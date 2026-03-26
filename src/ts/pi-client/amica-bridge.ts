@@ -4,6 +4,7 @@ import type { AmicaBridgeConfig } from "../shared/env.js";
 
 interface SatelliteBridgeSessionEventData {
   sessionId: string;
+  turnId?: string;
 }
 
 interface SatelliteUserFinalEvent {
@@ -20,6 +21,7 @@ interface SatelliteAssistantFinalEvent {
     audioBase64: string;
     mimeType: string;
     durationMs?: number;
+    segmentIndex?: number;
   };
 }
 
@@ -30,6 +32,7 @@ interface SatelliteAssistantSegmentEvent {
     audioBase64: string;
     mimeType: string;
     durationMs?: number;
+    segmentIndex?: number;
   };
 }
 
@@ -103,7 +106,7 @@ export class AmicaBridge {
     return Math.max(0, Math.round(audioBytes / 16));
   }
 
-  async postUserFinal(text: string): Promise<void> {
+  async postUserFinal(text: string, turnId?: string): Promise<void> {
     const normalized = text.trim();
     if (!normalized) {
       throw new Error("Amica bridge user text is empty");
@@ -112,22 +115,25 @@ export class AmicaBridge {
       type: "user.final",
       data: {
         sessionId: this.requireSessionId(),
+        ...(turnId ? { turnId } : {}),
         text: normalized,
       },
     });
   }
 
-  async postAssistantFinal(text: string): Promise<number> {
-    return this.postAssistantAudioEvent("assistant.final", text);
+  async postAssistantFinal(text: string, turnId?: string, segmentIndex?: number): Promise<number> {
+    return this.postAssistantAudioEvent("assistant.final", text, turnId, segmentIndex);
   }
 
-  async postAssistantSegment(text: string): Promise<number> {
-    return this.postAssistantAudioEvent("assistant.segment", text);
+  async postAssistantSegment(text: string, turnId?: string, segmentIndex?: number): Promise<number> {
+    return this.postAssistantAudioEvent("assistant.segment", text, turnId, segmentIndex);
   }
 
   private async postAssistantAudioEvent(
     type: SatelliteAssistantSegmentEvent["type"] | SatelliteAssistantFinalEvent["type"],
     text: string,
+    turnId?: string,
+    segmentIndex?: number,
   ): Promise<number> {
     const normalized = text.trim();
     if (!normalized) {
@@ -145,20 +151,23 @@ export class AmicaBridge {
       type,
       data: {
         sessionId: this.requireSessionId(),
+        ...(turnId ? { turnId } : {}),
         text: normalized,
         audioBase64,
         mimeType: "audio/mpeg",
         durationMs: durationMs > 0 ? durationMs : undefined,
+        ...(segmentIndex !== undefined ? { segmentIndex } : {}),
       },
     });
     return durationMs;
   }
 
-  async postInterrupt(): Promise<void> {
+  async postInterrupt(turnId?: string): Promise<void> {
     await this.postEvent({
       type: "interrupt",
       data: {
         sessionId: this.requireSessionId(),
+        ...(turnId ? { turnId } : {}),
       },
     });
     this.clearAssistantTurn();

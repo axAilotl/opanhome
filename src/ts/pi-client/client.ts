@@ -16,6 +16,8 @@ import { AmicaBridge } from "./amica-bridge.js";
 import { StreamingAudioPlayer } from "./audio-player.js";
 import { AudioCapture, type AudioChunk } from "./audio-capture.js";
 
+const PLAYBACK_CAPTURE_COOLDOWN_MS = 750;
+
 export class PiRealtimeClient {
   private ws: WebSocket | null = null;
   private readonly player: StreamingAudioPlayer;
@@ -42,6 +44,10 @@ export class PiRealtimeClient {
   private pendingOwnerSegments = 0;
   private interruptSpeechStartedAt = 0;
   private playbackStartedAt = 0;
+  private captureSuppressedUntil = 0;
+  private bridgeTurnSequence = 0;
+  private bridgeTurnId: string | null = null;
+  private bridgeAssistantSegmentIndex = 0;
 
   constructor(private readonly config: PiClientConfig) {
     this.player = new StreamingAudioPlayer(config.outputCommand);
@@ -55,6 +61,7 @@ export class PiRealtimeClient {
         return;
       }
       this.playbackActive = false;
+      this.captureSuppressedUntil = Date.now() + PLAYBACK_CAPTURE_COOLDOWN_MS;
       void this.ducking?.restore();
       if (graceful && this.sentenceCompleted && !this.botSpeakEndSent) {
         this.botSpeakEndSent = true;
@@ -201,6 +208,8 @@ export class PiRealtimeClient {
       if (startingOwnerTurn) {
         this.resetAssistantTextState();
         this.pendingOwnerSegments = 0;
+        this.ensureBridgeTurnId();
+        this.bridgeAssistantSegmentIndex = 0;
         this.amicaBridge?.clearAssistantTurn();
       }
       this.assistantTurnOpen = true;
@@ -248,7 +257,8 @@ export class PiRealtimeClient {
     if (!this.amicaBridge) {
       return;
     }
-    await this.amicaBridge.postUserFinal(text);
+    const turnId = this.startBridgeTurn();
+    await this.amicaBridge.postUserFinal(text, turnId);
   }
 
   private async handleFinalAssistant(text: string): Promise<void> {
@@ -313,6 +323,10 @@ export class PiRealtimeClient {
       }
     }
 
+    if (this.playbackActive || now < this.captureSuppressedUntil) {
+      return;
+    }
+
     this.send({
       type: "audio",
       audio: encodeAudioChunk(chunk.pcm),
@@ -331,6 +345,7 @@ export class PiRealtimeClient {
     this.assistantTurnOpen = false;
     this.playbackStartedAt = 0;
     this.interruptSpeechStartedAt = 0;
+    this.captureSuppressedUntil = 0;
     this.clearOwnerPlaybackTimer();
     this.pendingOwnerSegments = 0;
     this.resetAssistantTextState();
@@ -344,7 +359,7 @@ export class PiRealtimeClient {
     }
     await this.ducking?.restore();
     try {
-      await this.amicaBridge?.postInterrupt();
+      await this.amicaBridge?.postInterrupt(this.bridgeTurnId ?? undefined);
     } catch (error) {
       console.error("Amica bridge interrupt post failed:", error);
     }
@@ -375,9 +390,12 @@ export class PiRealtimeClient {
     this.interruptingUntil = 0;
     this.playbackStartedAt = 0;
     this.interruptSpeechStartedAt = 0;
+    this.captureSuppressedUntil = 0;
     this.clearOwnerPlaybackTimer();
     this.pendingOwnerSegments = 0;
     this.resetAssistantTextState();
+    this.bridgeTurnId = null;
+    this.bridgeAssistantSegmentIndex = 0;
     this.amicaBridge?.setSessionId(null);
     this.amicaBridge?.clearAssistantTurn();
   }
@@ -406,6 +424,7 @@ export class PiRealtimeClient {
     this.assistantTurnOpen = false;
     this.playbackStartedAt = 0;
     this.interruptSpeechStartedAt = 0;
+    this.captureSuppressedUntil = Date.now() + PLAYBACK_CAPTURE_COOLDOWN_MS;
     this.clearOwnerPlaybackTimer();
     this.pendingOwnerSegments = 0;
     void this.ducking?.restore();
@@ -524,10 +543,29 @@ export class PiRealtimeClient {
       if (!text) {
         return;
       }
-      const durationMs = await this.amicaBridge.postAssistantSegment(text);
+      const durationMs = await this.amicaBridge.postAssistantSegment(
+        text,
+        this.ensureBridgeTurnId(),
+        this.bridgeAssistantSegmentIndex,
+      );
+      this.bridgeAssistantSegmentIndex += 1;
       this.pendingOwnerSegments -= 1;
       this.scheduleOwnerPlaybackEnd(durationMs);
     }
+  }
+
+  private startBridgeTurn(): string {
+    this.bridgeTurnSequence += 1;
+    this.bridgeTurnId = `bridge-turn-${this.bridgeTurnSequence}`;
+    this.bridgeAssistantSegmentIndex = 0;
+    return this.bridgeTurnId;
+  }
+
+  private ensureBridgeTurnId(): string {
+    if (this.bridgeTurnId) {
+      return this.bridgeTurnId;
+    }
+    return this.startBridgeTurn();
   }
 }
 
