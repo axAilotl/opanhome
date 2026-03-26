@@ -16,7 +16,7 @@ import { AmicaBridge } from "./amica-bridge.js";
 import { StreamingAudioPlayer } from "./audio-player.js";
 import { AudioCapture, type AudioChunk } from "./audio-capture.js";
 
-const PLAYBACK_CAPTURE_COOLDOWN_MS = 750;
+const PLAYBACK_CAPTURE_COOLDOWN_MS = 0;
 
 export class PiRealtimeClient {
   private ws: WebSocket | null = null;
