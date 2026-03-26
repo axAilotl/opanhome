@@ -405,8 +405,10 @@ export class PiRealtimeClient {
       return;
     }
     this.clearOwnerPlaybackTimer();
-    // Give the browser a small decode/start cushion before clearing speaking state.
-    const remainingMs = Math.max(0, durationMs + 250);
+    // durationMs is derived from compressed MP3 bytes, which can significantly
+    // under-estimate real browser playback time on the Pi. Keep owner-mode
+    // playback active conservatively so the mic does not reopen mid-utterance.
+    const remainingMs = Math.max(0, (durationMs * 4) + 500, durationMs + 1200);
     this.ownerPlaybackTimer = setTimeout(() => {
       this.ownerPlaybackTimer = null;
       this.finishOwnerPlayback();
