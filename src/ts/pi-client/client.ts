@@ -184,13 +184,17 @@ export class PiRealtimeClient {
 
   private async handleTextSignal(signal: string): Promise<void> {
     if (signal === "audio-init") {
+      const startingOwnerTurn = this.amicaBridge?.isOwnerMode() && !this.assistantTurnOpen;
       this.requireNewAudioInit = false;
       this.sentenceCompleted = false;
       this.botSpeakEndSent = false;
+      if (startingOwnerTurn) {
+        this.resetAssistantTextState();
+        this.amicaBridge?.clearAssistantTurn();
+      }
       this.assistantTurnOpen = true;
       this.playbackActive = true;
       this.clearOwnerPlaybackTimer();
-      this.amicaBridge?.clearAssistantTurn();
       if (!this.amicaBridge?.isOwnerMode()) {
         this.playbackGeneration = this.player.start();
       }
@@ -205,10 +209,8 @@ export class PiRealtimeClient {
     if (signal === "audio-end") {
       this.sentenceCompleted = true;
       if (this.amicaBridge?.isOwnerMode()) {
-        const durationMs = await this.amicaBridge.postAssistantSegment(
-          this.takeAssistantTextSegment(),
-        );
-        this.scheduleOwnerPlaybackEnd(durationMs);
+        console.log("audio-end");
+        return;
       } else {
         this.player.finish();
       }
@@ -242,8 +244,25 @@ export class PiRealtimeClient {
       return;
     }
 
-    this.finalizeAssistantText(text);
+    if (!this.amicaBridge.isOwnerMode()) {
+      this.finalizeAssistantText(text);
+      this.assistantTurnOpen = false;
+      return;
+    }
+
+    const normalized = text.trim();
     this.assistantTurnOpen = false;
+    this.resetAssistantTextState();
+    if (!normalized) {
+      return;
+    }
+    if (this.amicaBridge.estimateAssistantAudioDurationMs() === 0) {
+      console.warn("assistant.final skipped because no owner-mode audio was buffered");
+      return;
+    }
+
+    const durationMs = await this.amicaBridge.postAssistantFinal(normalized);
+    this.scheduleOwnerPlaybackEnd(durationMs);
   }
 
   private async handleChunk(chunk: AudioChunk): Promise<void> {
@@ -448,14 +467,6 @@ export class PiRealtimeClient {
       this.assistantTextSegments.push(finalText.trim());
       this.assistantTextHasStarted = true;
     }
-  }
-
-  private takeAssistantTextSegment(): string {
-    const text = this.assistantTextSegments.shift()?.trim();
-    if (!text) {
-      throw new Error("Assistant text segment was empty at audio-end");
-    }
-    return text;
   }
 
   private resetAssistantTextState(): void {
