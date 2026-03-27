@@ -12,6 +12,7 @@ interface MicStatePayload {
 }
 
 export class PiClientApiServer {
+  private micMuted = false;
   private readonly httpServer = http.createServer((request, response) => {
     void this.handleRequest(request, response);
   });
@@ -87,7 +88,7 @@ export class PiClientApiServer {
         return;
       }
 
-      this.realtimeClient?.setMicMuted(payload.muted);
+      this.setMicMuted(payload.muted);
       this.respondJson(request, response, 200, this.getMicStatePayload());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -108,6 +109,15 @@ export class PiClientApiServer {
     }
 
     try {
+      if (this.isMicMuted()) {
+        this.respondJson(request, response, 200, {
+          text: "",
+          provider: "pi-client-muted",
+          latency_ms: 0,
+        });
+        return;
+      }
+
       const form = await readFormData(request);
       const file = form.get("file");
       if (!(file instanceof File)) {
@@ -173,16 +183,19 @@ export class PiClientApiServer {
   }
 
   private getMicStatePayload(): MicStatePayload {
-    if (!this.realtimeClient) {
-      return {
-        muted: true,
-        available: false,
-      };
-    }
     return {
-      muted: this.realtimeClient.isMicMuted(),
+      muted: this.isMicMuted(),
       available: true,
     };
+  }
+
+  private isMicMuted(): boolean {
+    return this.realtimeClient?.isMicMuted() ?? this.micMuted;
+  }
+
+  private setMicMuted(muted: boolean): void {
+    this.micMuted = muted;
+    this.realtimeClient?.setMicMuted(muted);
   }
 
   private respondOptions(
