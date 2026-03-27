@@ -170,6 +170,12 @@ class RealtimeConnection {
         await this.cancelReply("client_interrupt");
         await this.send({ type: "assistant.interrupted", sessionId: this.sessionId });
         return;
+      case "relay.stt":
+        await this.handleRelaySttRequest(message);
+        return;
+      case "relay.tts":
+        await this.handleRelayTtsRequest(message);
+        return;
       case "text":
         await this.handleTextSignal(message.data);
         return;
@@ -203,6 +209,53 @@ class RealtimeConnection {
         appendEvent(this.activeTurn, "client.bot_speaking", {});
       }
       return;
+    }
+  }
+
+  private async handleRelaySttRequest(
+    message: Extract<ClientToHubMessage, { type: "relay.stt" }>,
+  ): Promise<void> {
+    try {
+      const transcript = await transcribePcmClip(
+        this.config.deepgramApiKey,
+        decodeAudioChunk(message.audio),
+      );
+      await this.send({
+        type: "relay.stt.result",
+        requestId: message.requestId,
+        text: transcript.text,
+        provider: transcript.provider,
+        latencyMs: transcript.latencyMs,
+      });
+    } catch (error) {
+      await this.sendRelayError("stt", message.requestId, error);
+    }
+  }
+
+  private async handleRelayTtsRequest(
+    message: Extract<ClientToHubMessage, { type: "relay.tts" }>,
+  ): Promise<void> {
+    const spokenText = sanitizeSpokenText(message.text);
+    if (!spokenText) {
+      await this.sendRelayError("tts", message.requestId, new Error("Relay TTS text is empty"));
+      return;
+    }
+
+    try {
+      for await (const audioChunk of this.tts.streamText(singleValueStream(spokenText))) {
+        await this.send({
+          type: "relay.tts.chunk",
+          requestId: message.requestId,
+          audio: encodeAudioChunk(audioChunk),
+        });
+      }
+      await this.send({
+        type: "relay.tts.done",
+        requestId: message.requestId,
+        mimeType: "audio/mpeg",
+      });
+    } catch (error) {
+      await this.sendRelayError("tts", message.requestId, error);
     }
   }
 
@@ -415,6 +468,19 @@ class RealtimeConnection {
     }
   }
 
+  private async sendRelayError(
+    operation: "stt" | "tts",
+    requestId: string,
+    error: unknown,
+  ): Promise<void> {
+    await this.send({
+      type: "relay.error",
+      requestId,
+      operation,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   private ensureActiveTurn(): ArtifactTurn {
     if (this.activeTurn) {
       return this.activeTurn;
@@ -447,6 +513,56 @@ class RealtimeConnection {
 
 async function* singleValueStream(text: string): AsyncGenerator<string, void, void> {
   yield text;
+}
+
+async function transcribePcmClip(
+  apiKey: string,
+  pcm: Buffer,
+): Promise<TranscriptResult> {
+  const startedAt = Date.now();
+  const response = await fetch(
+    "https://api.deepgram.com/v1/listen" +
+      "?model=nova-3" +
+      "&encoding=linear16" +
+      "&sample_rate=16000" +
+      "&channels=1" +
+      "&smart_format=true",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${apiKey}`,
+        "Content-Type": "audio/raw",
+      },
+      body: new Uint8Array(pcm),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await formatDeepgramError(response));
+  }
+
+  const payload = await response.json() as {
+    results?: {
+      channels?: Array<{
+        alternatives?: Array<{
+          transcript?: string;
+        }>;
+      }>;
+    };
+  };
+  const text = payload.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim() || "";
+  return {
+    text,
+    provider: "deepgram-prerecorded",
+    latencyMs: Date.now() - startedAt,
+  };
+}
+
+async function formatDeepgramError(response: Response): Promise<string> {
+  const body = (await response.text()).trim();
+  if (body) {
+    return `Deepgram transcription failed (${response.status}): ${body}`;
+  }
+  return `Deepgram transcription failed (${response.status})`;
 }
 
 function decodeRawData(raw: RawData): string | null {

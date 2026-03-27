@@ -1,19 +1,33 @@
 import { loadPiClientConfig, resolveProjectRoot } from "../shared/env.js";
 import { PiRealtimeClient } from "./client.js";
-import { MicControlServer } from "./mic-control-server.js";
+import { PiClientApiServer } from "./mic-control-server.js";
+import { HubOpenAiRelayClient } from "./relay-client.js";
 
 async function main(): Promise<void> {
   const config = loadPiClientConfig(resolveProjectRoot());
-  const client = new PiRealtimeClient(config);
+  const realtimeClient = config.realtimeAudioEnabled
+    ? new PiRealtimeClient(config)
+    : null;
+  const relayClient = config.control
+    ? new HubOpenAiRelayClient(config)
+    : null;
   if (config.control) {
-    const controlServer = new MicControlServer(config.control, client);
-    await controlServer.start();
+    if (!relayClient) {
+      throw new Error("Relay client must be available when the Pi client API is enabled");
+    }
+    relayClient.start();
+    const apiServer = new PiClientApiServer(config.control, relayClient, realtimeClient);
+    await apiServer.start();
     console.log(
-      `TS Pi client mic control listening on http://${config.control.bindHost}:${String(config.control.port)}/mic`,
+      `TS Pi client API listening on http://${config.control.bindHost}:${String(config.control.port)}/`,
     );
   }
-  client.start();
-  console.log(`TS Pi client connecting to ${config.hubUrl}`);
+  if (realtimeClient) {
+    realtimeClient.start();
+    console.log(`TS Pi realtime client connecting to ${config.hubUrl}`);
+    return;
+  }
+  console.log(`TS Pi relay-only client connecting to ${config.hubUrl}`);
 }
 
 void main().catch((error) => {

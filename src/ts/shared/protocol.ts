@@ -4,6 +4,8 @@ export type ClientToHubMessage =
   | TextSignalMessage
   | PingMessage
   | InterruptMessage
+  | RelaySttRequestMessage
+  | RelayTtsRequestMessage
   | TurnStartMessage
   | TurnEndMessage;
 
@@ -16,6 +18,10 @@ export type HubToClientMessage =
   | MessageEvent
   | ActionMessage
   | ErrorEventMessage
+  | RelaySttResultMessage
+  | RelayTtsChunkMessage
+  | RelayTtsDoneMessage
+  | RelayRequestErrorMessage
   | PongMessage
   | AssistantInterruptedCompatMessage;
 
@@ -43,6 +49,23 @@ export interface PingMessage {
 
 export interface InterruptMessage {
   type: "interrupt";
+}
+
+export interface RelaySttRequestMessage {
+  type: "relay.stt";
+  requestId: string;
+  audio: string;
+  mimeType?: string;
+  prompt?: string;
+  language?: string;
+}
+
+export interface RelayTtsRequestMessage {
+  type: "relay.tts";
+  requestId: string;
+  text: string;
+  voice?: string;
+  model?: string;
 }
 
 export interface TurnStartMessage {
@@ -105,6 +128,33 @@ export interface ErrorEventMessage {
   data: {
     message: string;
   };
+}
+
+export interface RelaySttResultMessage {
+  type: "relay.stt.result";
+  requestId: string;
+  text: string;
+  provider: string;
+  latencyMs?: number;
+}
+
+export interface RelayTtsChunkMessage {
+  type: "relay.tts.chunk";
+  requestId: string;
+  audio: string;
+}
+
+export interface RelayTtsDoneMessage {
+  type: "relay.tts.done";
+  requestId: string;
+  mimeType: string;
+}
+
+export interface RelayRequestErrorMessage {
+  type: "relay.error";
+  requestId: string;
+  operation: "stt" | "tts";
+  message: string;
 }
 
 export interface AssistantInterruptedCompatMessage {

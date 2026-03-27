@@ -35,6 +35,8 @@ export interface PiClientConfig {
   deviceId: string;
   deviceName: string;
   conversationId?: string;
+  realtimeAudioEnabled: boolean;
+  relayRequestTimeoutMs: number;
   amicaBridge: AmicaBridgeConfig | null;
   control: PiClientControlConfig | null;
   inputCommand: string[];
@@ -123,12 +125,21 @@ export function loadPiClientConfig(projectRoot: string): PiClientConfig {
   const duckCard = process.env.ALSA_DUCK_CARD?.trim() || audioCard;
   const duckControl = process.env.ALSA_DUCK_CONTROL?.trim() || "PCM";
   const amicaBridge = loadAmicaBridgeConfig();
+  const relayRequestTimeoutMs = Number.parseInt(
+    process.env.PI_CLIENT_RELAY_REQUEST_TIMEOUT_MS || "20000",
+    10,
+  );
+  if (!Number.isInteger(relayRequestTimeoutMs) || relayRequestTimeoutMs <= 0) {
+    throw new Error("PI_CLIENT_RELAY_REQUEST_TIMEOUT_MS must be a positive integer");
+  }
 
   return {
     hubUrl: required("HUB_WS_URL"),
     deviceId: required("DEVICE_ID"),
     deviceName: required("DEVICE_NAME"),
     conversationId: optional("CONVERSATION_ID"),
+    realtimeAudioEnabled: process.env.PI_CLIENT_REALTIME_AUDIO_ENABLED?.trim() !== "false",
+    relayRequestTimeoutMs,
     amicaBridge,
     control: loadPiClientControlConfig(),
     inputCommand: splitCommand(
