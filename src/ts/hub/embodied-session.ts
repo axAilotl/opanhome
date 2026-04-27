@@ -16,6 +16,13 @@ export const THIN_SHELL_CAPABILITIES: Required<SatelliteCapabilities> = {
   safety: [],
 };
 
+export const VOXTA_VAM_CAPABILITIES: Required<SatelliteCapabilities> = {
+  input: ["text", "vision_upload"],
+  output: ["text", "subtitle", "local_file_audio", "animation", "action", "expression"],
+  control: ["interrupt", "presence", "session_attach"],
+  safety: ["action_allowlist", "local_only"],
+};
+
 export interface AttachedSatellite {
   id: string;
   name: string;

@@ -31,7 +31,21 @@ export interface HubConfig {
   artifactsRoot: string;
   psfn: PsfnRuntimeConfig | null;
   hermes: HermesRuntimeConfig | null;
+  voxta: VoxtaFacadeConfig;
   sessionTtlSeconds: number;
+}
+
+export interface VoxtaFacadeConfig {
+  enabled: boolean;
+  satelliteId: string;
+  satelliteName: string;
+  assistantId: string;
+  assistantName: string;
+  userId: string;
+  userName: string;
+  appLabel: string;
+  clientVersion: string;
+  actionAllowlist: string[];
 }
 
 export interface PiClientConfig {
@@ -144,6 +158,7 @@ export function loadHubConfig(projectRoot: string): HubConfig {
     artifactsRoot: resolvePath(projectRoot, process.env.ARTIFACT_ROOT || ".artifacts/runtime-ts"),
     psfn,
     hermes,
+    voxta: loadVoxtaFacadeConfig(),
     sessionTtlSeconds: Number.parseInt(process.env.SESSION_TTL_SECONDS || "300", 10),
   };
 }
@@ -154,6 +169,21 @@ function loadAgentRuntime(): HubConfig["agentRuntime"] {
     return runtime;
   }
   throw new Error("AGENT_RUNTIME must be either 'psfn' or 'hermes'");
+}
+
+function loadVoxtaFacadeConfig(): VoxtaFacadeConfig {
+  return {
+    enabled: process.env.VOXTA_FACADE_ENABLED?.trim() !== "false",
+    satelliteId: process.env.VOXTA_SATELLITE_ID?.trim() || "voxta-vam",
+    satelliteName: process.env.VOXTA_SATELLITE_NAME?.trim() || "Voxta VaM",
+    assistantId: process.env.VOXTA_ASSISTANT_ID?.trim() || "psfn-assistant",
+    assistantName: process.env.VOXTA_ASSISTANT_NAME?.trim() || "PSFN",
+    userId: process.env.VOXTA_USER_ID?.trim() || "voxta-user",
+    userName: process.env.VOXTA_USER_NAME?.trim() || "User",
+    appLabel: process.env.VOXTA_APP_LABEL?.trim() || "PSFN Satellite Hub",
+    clientVersion: process.env.VOXTA_CLIENT_VERSION?.trim() || "1.2.1",
+    actionAllowlist: splitCsv(process.env.VOXTA_APP_TRIGGER_ALLOWLIST || ""),
+  };
 }
 
 export function loadPiClientConfig(projectRoot: string): PiClientConfig {
@@ -302,6 +332,13 @@ function optional(name: string): string | undefined {
 function splitCommand(command: string): string[] {
   const matches = command.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
   return matches.map((part) => part.replace(/^"(.*)"$/, "$1"));
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function isLoopbackHost(value: string): boolean {

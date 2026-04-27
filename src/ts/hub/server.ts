@@ -1,4 +1,5 @@
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 
@@ -28,6 +29,7 @@ import type { AgentRuntimeAdapter } from "./agent-runtime.js";
 import { ElevenLabsStream } from "./elevenlabs-stream.js";
 import { HermesApiModelAdapter } from "./hermes-api-model.js";
 import { PsfnModelAdapter } from "./psfn-model.js";
+import { VoxtaFacade } from "./voxta-facade.js";
 import {
   canReceiveStreamingAudio,
   DEFAULT_REALTIME_CAPABILITIES,
@@ -41,26 +43,39 @@ import {
 } from "../shared/text.js";
 
 export class RealtimeHubServer {
-  private readonly httpServer = http.createServer((_, response) => {
-    response.statusCode = 200;
-    response.end("opanhome-ts-hub\n");
-  });
-
-  private readonly wsServer = new WebSocketServer({ server: this.httpServer });
+  private readonly httpServer: http.Server;
+  private readonly wsServer = new WebSocketServer({ noServer: true });
   private readonly sessions: SessionStore;
   private readonly embodiedSessions: EmbodiedSessionRegistry;
   private readonly agent: AgentRuntimeAdapter;
   private readonly tts: ElevenLabsStream;
+  private readonly voxta: VoxtaFacade;
 
-  constructor(private readonly config: HubConfig) {
+  constructor(
+    private readonly config: HubConfig,
+    options: { agent?: AgentRuntimeAdapter } = {},
+  ) {
     this.sessions = new SessionStore(config.sessionTtlSeconds);
     this.embodiedSessions = new EmbodiedSessionRegistry(resolveChannelType(config));
-    this.agent = createAgentRuntime(config);
+    this.agent = options.agent ?? createAgentRuntime(config);
     this.tts = new ElevenLabsStream(
       config.elevenlabsApiKey,
       config.elevenlabsModelId,
       config.elevenlabsVoiceId,
     );
+    this.voxta = new VoxtaFacade({
+      config: config.voxta,
+      sessions: this.sessions,
+      embodiedSessions: this.embodiedSessions,
+      agent: this.agent,
+    });
+    this.httpServer = http.createServer((request, response) => {
+      if (this.voxta.handleHttp(request, response)) {
+        return;
+      }
+      response.statusCode = 200;
+      response.end("opanhome-ts-hub\n");
+    });
   }
 
   async start(): Promise<void> {
@@ -77,17 +92,32 @@ export class RealtimeHubServer {
         console.error("Realtime connection failed:", error);
       });
     });
+    this.httpServer.on("upgrade", (request, socket, head) => {
+      if (this.voxta.shouldHandleUpgrade(request)) {
+        this.voxta.handleUpgrade(request, socket, head);
+        return;
+      }
+      this.wsServer.handleUpgrade(request, socket, head, (websocket) => {
+        this.wsServer.emit("connection", websocket, request);
+      });
+    });
 
     await new Promise<void>((resolve) => {
       this.httpServer.listen(this.config.port, this.config.bindHost, () => resolve());
     });
   }
 
+  address(): AddressInfo | string | null {
+    return this.httpServer.address();
+  }
+
   async close(): Promise<void> {
+    await this.agent.close();
     await this.tts.close();
     await new Promise<void>((resolve, reject) => {
       this.wsServer.close((error) => (error ? reject(error) : resolve()));
     });
+    await this.voxta.close();
     await new Promise<void>((resolve, reject) => {
       this.httpServer.close((error) => (error ? reject(error) : resolve()));
     });

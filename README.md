@@ -149,6 +149,12 @@ Run the TypeScript realtime hub:
 npm run hub:ts
 ```
 
+The same TypeScript hub also exposes the initial Voxta-compatible facade:
+
+- `POST /hub/negotiate?negotiateVersion=1`
+- `WS /hub?id=<connectionToken>`
+- SignalR JSON framing with `SendMessage` inbound and `ReceiveMessage` outbound
+
 Run the TypeScript Pi client locally:
 
 ```bash
@@ -213,6 +219,10 @@ Important settings for the Python ESPHome fallback path:
 - `HERMES_API_KEY` or `API_SERVER_KEY` for Hermes API-server auth and stable `X-Hermes-Session-Id` continuation
 - `HERMES_MODEL` for the advertised Hermes API-server model, defaulting to `hermes-agent`
 - `HERMES_CHANNEL_TYPE` for the hub channel id prefix, defaulting to `hermes-agent`
+- `VOXTA_FACADE_ENABLED` enables the Voxta-compatible SignalR facade on `/hub`, defaulting to `true`
+- `VOXTA_SATELLITE_ID` and `VOXTA_SATELLITE_NAME` identify the VaM/Voxta satellite in PSFN channel metadata
+- `VOXTA_ASSISTANT_NAME`, `VOXTA_USER_NAME`, and related ID vars shape the Voxta welcome/chat payloads
+- `VOXTA_APP_TRIGGER_ALLOWLIST` is a comma-separated allowlist for Voxta `appTrigger` forwarding
 - optional `PSFN_AUTHOR_ID` and `PSFN_AUTHOR_NAME` if you need the hub to assert a specific PSFN-side author
 - `VOICE_REPLY_TIMEOUT_SECONDS`
 - `VOICE_ENDPOINTING_GRACE_SECONDS`
