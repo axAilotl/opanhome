@@ -1,32 +1,41 @@
-# Opanhome
+# PSFN Satellite Hub
 
-Dual-path voice hub for PSFN.
+Voice and embodiment hub for PSFN.
 
-This repo is the middleware layer between voice endpoints and PSFN. It now has two device paths:
+This repo is the middleware layer between endpoint hardware, embodiment clients,
+and a PSFN-compatible agent runtime. It currently has three integration paths:
 
 - a custom TypeScript realtime websocket path for Pi-class devices that can do smooth bidirectional conversation
+- a Voxta-compatible SignalR facade for VaM / AcidBubbles-style plugin clients
 - an ESPHome Native API fallback path for stock ESPHome voice devices and `linux-voice-assistant`
 
-The current testing target is direct PSFN deployment first. Treat this repo as a bridge into the PSFN OpenAI-compatible API, not as a scoped local brain.
+The current testing target is direct PSFN deployment first, with Hermes available
+through its OpenAI-compatible API server via `AGENT_RUNTIME=hermes`. Treat this
+repo as a bridge into an agent runtime, not as a scoped local brain.
 
 ## What This Repo Does
 
 The hub in this repo does the heavy lifting:
 
-- accepts either a custom realtime voice client or an ESPHome voice device
+- accepts a custom realtime voice client, a Voxta/VaM client, or an ESPHome voice device
 - streams microphone audio to Deepgram STT
 - applies turn endpointing, interrupt, and timeout logic
-- sends the current recognized text plus a stable conversation id into PSFN
-- streams PSFN text back into ElevenLabs TTS
+- sends the current recognized text plus a stable conversation id into PSFN or Hermes
+- streams runtime text back into ElevenLabs TTS
 - returns assistant audio either as websocket chunks or ESPHome playback media
+- exposes Voxta-compatible chat lifecycle and reply events for VaM embodiment
 - stores turn artifacts, transcripts, and reply metadata locally
 
-On the TypeScript realtime path, PSFN owns the actual conversation/session state. The hub keeps satellite/runtime transport state and relays the current turn.
+On the TypeScript paths, PSFN or Hermes owns the actual conversation/session
+state. The hub keeps satellite/runtime transport state and relays the current
+turn.
 
 Device behavior depends on the path:
 
 - custom realtime client:
   local mic capture, local playback ownership, explicit interrupt, persistent websocket
+- Voxta/VaM facade:
+  SignalR-compatible chat route, text turns, chat lifecycle events, allowlisted app triggers
 - ESPHome fallback:
   wake word or button start, mic capture, speaker playback, ESPHome voice-assistant transport
 
@@ -49,6 +58,13 @@ ESPHome device / linux-voice-assistant / ESP32 fallback
   -> PSFN conversation runtime
   -> ElevenLabs streaming TTS websocket
   <- announcement/media playback over the ESPHome route
+
+VaM / Voxta-compatible plugin
+  -> SignalR JSON /hub route
+  -> Voxta SendMessage framing
+  -> PSFN or Hermes conversation runtime
+  <- Voxta ReceiveMessage chat lifecycle and streamed reply events
+  <- allowlisted appTrigger/action events
 ```
 
 ## Current Status
@@ -65,6 +81,9 @@ Implemented:
   `audio-init`, `audio-end`, `bot-speaking`, `bot-speak-end`, `interrupt-event`
 - server-side utterance boundaries on the TS path driven by Deepgram live results instead of client-side turn gating
 - ESPHome fallback transport kept intact on the Python side
+- Voxta-compatible SignalR facade on the TypeScript hub:
+  `/hub/negotiate`, websocket `/hub`, `SendMessage` inbound, `ReceiveMessage` outbound
+- Voxta chat lifecycle framing for authenticate, register app, chat list/start/resume/subscribe, send, interrupt, and allowlisted trigger actions
 - `hub probe` for metadata, entities, services, and state subscription
 - `hub transport-spike` for raw ESPHome transport capture and artifact logging
 - local artifact capture under `.artifacts/runtime/` and `.artifacts/runtime-ts/`
@@ -73,6 +92,7 @@ Currently working:
 
 - the TypeScript smoke harness succeeds end-to-end against the rebuilt realtime hub
 - the Pi 5 client path is the primary path to extend first
+- the Voxta facade has protocol-level test coverage, but still needs validation against the real AcidBubbles plugin
 - the ESPHome/Python path remains available as the fallback for stock devices
 
 Current intent:
@@ -80,6 +100,7 @@ Current intent:
 - make the voice loop feel fast and smooth enough for daily use
 - target the direct PSFN deployment first so the end-to-end path is real
 - keep Hermes available through its OpenAI-compatible API server when `AGENT_RUNTIME=hermes`
+- let VaM/Voxta act as an embodied satellite, not as a separate agent runtime
 - keep the bridge thin so this can stay a sidecar first
 - upstream only the smallest useful bridge seam later if it proves out
 
@@ -149,11 +170,14 @@ Run the TypeScript realtime hub:
 npm run hub:ts
 ```
 
-The same TypeScript hub also exposes the initial Voxta-compatible facade:
+Point a Voxta-compatible VaM plugin at the same TypeScript hub:
 
-- `POST /hub/negotiate?negotiateVersion=1`
-- `WS /hub?id=<connectionToken>`
-- SignalR JSON framing with `SendMessage` inbound and `ReceiveMessage` outbound
+```text
+http://<hub-host>:8787
+```
+
+The facade exposes `POST /hub/negotiate?negotiateVersion=1` and
+`WS /hub?id=<connectionToken>` using SignalR JSON framing.
 
 Run the TypeScript Pi client locally:
 
@@ -233,24 +257,72 @@ Realtime-only mode must set either `AUDIO_PUBLIC_HOST` or `REALTIME_VOICE_PUBLIC
 
 ## Testing With PSFN
 
-Set `PSFN_API_BASE_URL` and `PSFN_MODEL` in `.env`, then run:
+Set `PSFN_API_BASE_URL` and `PSFN_MODEL` in `.env`, then run the TypeScript hub:
+
+```bash
+npm run hub:ts
+```
+
+For the Python ESPHome fallback path, run:
 
 ```bash
 uv run hub run
 ```
 
-After that, fill in the remaining project-specific values in `.env`:
+Fill in the remaining project-specific values in `.env`:
 
 - ESPHome endpoint settings
 - bridge-specific overrides if you do not want to inherit provider keys from `~/.hermes/.env`
 
-At the moment there are no required Hermes source patches in this repo. The bridge is importing and using the existing global Hermes checkout in place.
+At the moment there are no required Hermes source patches in this repo. When
+`AGENT_RUNTIME=hermes`, the TypeScript hub talks to the Hermes API server over
+its OpenAI-compatible `/v1/chat/completions` endpoint.
 
-On the TypeScript realtime path, conversation continuity is also stored on the Hermes side under that global install. The hub passes a stable conversation id through to Hermes and does not maintain its own authoritative agent history.
+On the TypeScript paths, the hub passes a stable conversation id through to the
+selected runtime and does not maintain its own authoritative agent memory.
+
+## Voxta / VaM Facade
+
+The Voxta facade is mounted on the TypeScript hub. It is meant for VaM and
+AcidBubbles-style clients that expect a Voxta server shape, while still routing
+the actual conversation through PSFN or Hermes.
+
+Supported HTTP and websocket routes:
+
+| Route | Purpose |
+| --- | --- |
+| `POST /hub/negotiate?negotiateVersion=1` | SignalR negotiation |
+| `WS /hub?id=<connectionToken>` | SignalR JSON websocket |
+| `POST /voxta/hub/negotiate?negotiateVersion=1` | Alternate namespaced negotiation route |
+| `WS /voxta/hub?id=<connectionToken>` | Alternate namespaced websocket route |
+
+Supported Voxta client messages:
+
+| `$type` | Behavior |
+| --- | --- |
+| `authenticate` | Sends `welcome` and basic configuration payloads |
+| `registerApp` | Registers the VaM/Voxta satellite capabilities |
+| `loadCharactersList`, `loadScenariosList`, `loadChatsList` | Returns minimal lists backed by the configured PSFN assistant identity |
+| `startChat`, `resumeChat`, `subscribeToChat` | Opens or attaches a stable embodied session |
+| `send` | Routes user text into the selected PSFN/Hermes runtime |
+| `interrupt` | Cancels the active reply and emits Voxta interrupt/cancel events |
+| `triggerAction` | Emits `appTrigger` only when the action is in `VOXTA_APP_TRIGGER_ALLOWLIST` |
+| `speechPlaybackStart`, `speechPlaybackComplete`, `typingStart`, `typingEnd`, `pauseChat`, `inspect`, `inspectAudioInput` | Acknowledged for compatibility |
+
+Assistant replies emit `chatFlow`, `replyGenerating`, `replyStart`,
+`replyChunk`, final `message`, and `replyEnd` events. The facade also attaches
+the VaM/Voxta satellite to PSFN channel metadata with text, local audio,
+animation, expression, action, and vision capabilities.
+
+Current Voxta limitations:
+
+- local WAV/URL playback artifacts are not emitted yet
+- vision upload/capture is advertised as a capability but not implemented yet
+- compatibility has been tested against the SignalR/Voxta protocol shape, not yet against the live AcidBubbles plugin
 
 ## Transport Paths
 
-Top-tier path:
+Pi realtime path:
 
 - custom TypeScript realtime websocket client for Pi-class devices
 - one persistent connection
@@ -261,19 +333,27 @@ Top-tier path:
 - local device-owned playback and ducking
 - current Pi-class deployment uses this path and has `linux-voice-assistant` disabled
 
+Voxta/VaM embodiment path:
+
+- Voxta-compatible SignalR websocket facade on the TypeScript hub
+- user text turns enter the same embodied session registry as the Pi path
+- assistant deltas stream back as Voxta reply events
+- app triggers are denied by default unless explicitly allowlisted
+- VaM does not need to own microphone input; another satellite can provide mic and barge-in
+
 Fallback path:
 
 - stock ESPHome voice devices
 - `linux-voice-assistant`
 - ESP32-class endpoints speaking the ESPHome voice protocol
 
-The custom client protocol is documented in [docs/realtime-client-protocol.md](/mnt/samesung/ai/dev/opanhome/docs/realtime-client-protocol.md).
+The custom client protocol is documented in [docs/realtime-client-protocol.md](/mnt/samesung/ai/PSFN-Satellite-Hub/docs/realtime-client-protocol.md).
 
 ## ESPHome Fallback Notes
 
 Natural follow-up and interrupt behavior on the ESPHome fallback path still depends on a patched `linux-voice-assistant` endpoint. The stock endpoint is good enough to expose the ESPHome voice transport, but it does not own interruption strongly enough for the behavior this bridge wants.
 
-The current patch in [patches/linux-voice-assistant-followup-interrupt.patch](/mnt/samesung/ai/dev/opanhome/patches/linux-voice-assistant-followup-interrupt.patch) does three important things:
+The current patch in [patches/linux-voice-assistant-followup-interrupt.patch](/mnt/samesung/ai/PSFN-Satellite-Hub/patches/linux-voice-assistant-followup-interrupt.patch) does three important things:
 
 - adds speech-first barge-in detection knobs at the endpoint
 - turns wake-word and stop-word interrupts into explicit local `stop output now, then reopen mic` behavior
@@ -289,7 +369,7 @@ This is intentionally endpoint-local. Hermes itself still does not require a sou
 
 ## Pi Realtime Client
 
-The dedicated Pi-class TypeScript client lives under [src/ts/pi-client](/mnt/samesung/ai/dev/opanhome/src/ts/pi-client) with deploy assets under [client/ts_realtime](/mnt/samesung/ai/dev/opanhome/client/ts_realtime).
+The dedicated Pi-class TypeScript client lives under [src/ts/pi-client](/mnt/samesung/ai/PSFN-Satellite-Hub/src/ts/pi-client) with deploy assets under [client/ts_realtime](/mnt/samesung/ai/PSFN-Satellite-Hub/client/ts_realtime).
 
 It is the preferred path for devices that can afford a custom client, because it owns:
 
@@ -302,7 +382,9 @@ It is the preferred path for devices that can afford a custom client, because it
 - the same interaction pattern the working reference client used:
   stream audio continuously, stop playback locally first, then notify the hub
 
-The hub then relays the finalized user turn into Hermes, keeps the websocket/audio pipeline moving, and leaves the actual conversation/session state inside Hermes.
+The hub then relays the finalized user turn into the selected agent runtime,
+keeps the websocket/audio pipeline moving, and leaves the actual
+conversation/session state inside PSFN or Hermes.
 
 Deploy with:
 
@@ -315,10 +397,14 @@ PI_PASSWORD='<pi-password>' ./scripts/deploy-ts-pi-client.sh <pi-host>
 ```text
 src/ts/
   hub/
+    agent-runtime.ts
     main.ts
     server.ts
     deepgram-live.ts
-    hermes-model.ts
+    embodied-session.ts
+    hermes-api-model.ts
+    psfn-model.ts
+    voxta-facade.ts
     elevenlabs-stream.ts
   pi-client/
     main.ts
@@ -343,8 +429,8 @@ tests/
 
 ## Notes
 
-- The current runtime path is global-Hermes-first, using Hermes-compatible config/env rather than a project-scoped Hermes install.
-- The repo now supports both a custom TypeScript realtime client path and an ESPHome fallback path.
+- The TypeScript hub can use direct PSFN or Hermes API-server runtime selection via `AGENT_RUNTIME`.
+- The repo now supports a custom TypeScript realtime client path, a Voxta/VaM facade, and an ESPHome fallback path.
 - The checked-in TypeScript path is the primary conversation path now.
 - Historical `.agent/` scaffolding exists in this repo, but it is not the main deployment target right now.
 - The Python fallback bridge still serves streamed audio on `AUDIO_SERVER_PORT` for announcement playback back to the device.
@@ -355,8 +441,9 @@ tests/
 The likely upstream path is:
 
 1. keep ESPHome support as a sidecar first
-2. identify the smallest Hermes streaming seam worth upstreaming
-3. only move toward core gateway integration after the transport feels solid
+2. validate the Voxta facade against the real VaM plugin
+3. identify the smallest Hermes or PSFN streaming seam worth upstreaming
+4. only move toward core gateway integration after the transport feels solid
 
 That keeps the current experiment useful without forcing a large Hermes core change too early.
 
@@ -367,6 +454,8 @@ That keeps the current experiment useful without forcing a large Hermes core cha
 - support fully local STT providers behind the same adapter interface
 - support fully local TTS providers behind the same adapter interface
 - keep the dedicated Pi client as the top-tier path while retaining ESPHome fallback compatibility
+- add Voxta local WAV/URL playback artifacts for VaM speech playback
+- add Voxta vision upload handling
 - harden the TS client interrupt path further with more real-device soak time
 - make the hub usable with a fully local speech stack before worrying about a polished upstream story
 - upstream the smallest Hermes-side streaming interface only after the bridge feels stable against the global deployment
