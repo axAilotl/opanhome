@@ -32,9 +32,32 @@ All client messages are JSON text frames.
 ```json
 {
   "type": "hello",
-  "device_id": "pi-zero-2w-kitchen",
-  "device_name": "Kitchen Pi",
-  "conversation_id": "optional-stable-thread-id"
+  "deviceId": "pi-zero-2w-kitchen",
+  "deviceName": "Kitchen Pi",
+  "sessionId": "optional-stable-thread-id",
+  "channelId": "optional-explicit-psfn-channel-id",
+  "satelliteId": "pi-zero-2w-kitchen",
+  "satelliteName": "Kitchen Pi",
+  "capabilities": {
+    "input": ["microphone_pcm", "final_transcript", "text", "wake_event"],
+    "output": ["text", "subtitle", "streamed_audio"],
+    "control": ["interrupt", "presence", "session_attach"],
+    "safety": []
+  }
+}
+```
+
+`channelId` is optional. If omitted, the hub derives a stable PSFN channel id
+as `<PSFN_CHANNEL_TYPE>:<sessionId>`, defaulting to
+`psfn-satellite-hub:<sessionId>`.
+
+`user.text`
+
+```json
+{
+  "type": "user.text",
+  "text": "Typed shell input",
+  "interrupt": true
 }
 ```
 
@@ -89,24 +112,22 @@ Setup and turn lifecycle:
 
 - `session.ready`
 - `hello.ack`
+- `message` with final user text for typed or transcribed input
 - `turn.started`
 - `transcript.final`
 - `turn.no_input`
 
 Assistant lifecycle:
 
-- `assistant.start`
-- `assistant.text`
-- `assistant.audio.start`
-- `assistant.audio.chunk`
-- `assistant.audio.end`
-- `assistant.end`
-- `assistant.cancelled`
+- `message` with live assistant text deltas
+- `message` with final assistant text
+- `text` with `audio-init` / `audio-end` for audio-capable satellites
+- `audio` with base64 audio chunks for audio-capable satellites
 - `assistant.interrupted`
 
 Errors:
 
-- `error`
+- `error-event`
 
 ## Streaming Model
 

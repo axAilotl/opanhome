@@ -1,4 +1,5 @@
 import type { ConversationMessage } from "./session-store.js";
+import type { PsfnChannelContext } from "./embodied-session.js";
 import type { PsfnRuntimeConfig } from "../shared/env.js";
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -18,14 +19,16 @@ export class PsfnModelAdapter {
     userText: string;
     conversationId?: string;
     history?: ConversationMessage[];
+    channel?: PsfnChannelContext;
   }): AsyncGenerator<string, string, void> {
     const conversationId = input.conversationId?.trim();
     if (!conversationId) {
       throw new Error("PSFN conversation ID is required for the opanhome bridge");
     }
+    const channel = input.channel ?? buildDefaultChannelContext(this.runtime.channelType, conversationId);
     const response = await fetch(`${this.apiBaseUrl}/chat/completions`, {
       method: "POST",
-      headers: this.buildHeaders(conversationId),
+      headers: this.buildHeaders(channel),
       body: JSON.stringify({
         model: this.runtime.model,
         stream: true,
@@ -80,18 +83,23 @@ export class PsfnModelAdapter {
 
   async close(): Promise<void> {}
 
-  private buildHeaders(conversationId: string): Record<string, string> {
+  private buildHeaders(channel: PsfnChannelContext): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
     if (this.runtime.apiKey) {
       headers.Authorization = `Bearer ${this.runtime.apiKey}`;
     }
-    const channelId = deriveChannelId(conversationId);
-    if (channelId) {
-      headers["X-PSFN-Channel-Type"] = "psfn-amica";
-      headers["X-PSFN-Channel-ID"] = channelId;
-    }
+    headers["X-PSFN-Channel-Type"] = channel.channelType;
+    headers["X-PSFN-Channel-ID"] = channel.channelId;
+    headers["X-PSFN-Satellite-ID"] = channel.sourceSatelliteId;
+    headers["X-PSFN-Satellite-Name"] = channel.sourceSatelliteName;
+    headers["X-PSFN-Channel-Metadata"] = JSON.stringify({
+      sessionId: channel.sessionId,
+      sourceSatelliteId: channel.sourceSatelliteId,
+      sourceSatelliteName: channel.sourceSatelliteName,
+      activeSatellites: channel.activeSatellites,
+    });
     return headers;
   }
 
@@ -109,10 +117,27 @@ export class PsfnModelAdapter {
   }
 }
 
-function deriveChannelId(conversationId: string): string | null {
+function buildDefaultChannelContext(channelType: string, conversationId: string): PsfnChannelContext {
+  const channelId = deriveChannelId(channelType, conversationId);
+  return {
+    sessionId: conversationId,
+    channelType,
+    channelId,
+    sourceSatelliteId: "unknown",
+    sourceSatelliteName: "Unknown Satellite",
+    activeSatellites: [],
+  };
+}
+
+function deriveChannelId(channelType: string, conversationId: string): string {
   const normalized = conversationId.trim();
-  if (!normalized) return null;
-  return normalized.startsWith("psfn-amica:") ? normalized : null;
+  if (!normalized) {
+    throw new Error("PSFN conversation ID is required for channel derivation");
+  }
+  if (normalized.startsWith(`${channelType}:`)) {
+    return normalized;
+  }
+  return `${channelType}:${normalized}`;
 }
 
 function extractDelta(payload: string): string {

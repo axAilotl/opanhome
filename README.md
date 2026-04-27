@@ -160,6 +160,12 @@ Run the TypeScript smoke test against the realtime hub:
 npm run smoke:ts
 ```
 
+Send a typed turn through the PSFN channel seam with the text-only thin shell:
+
+```bash
+npm run shell:psfn -- "hello from the thin shell"
+```
+
 Apply the current `linux-voice-assistant` fork patch used for ESPHome fallback interrupt/follow-up behavior:
 
 ```bash
@@ -200,6 +206,7 @@ Important settings for the Python ESPHome fallback path:
 - `PSFN_API_BASE_URL`
 - `PSFN_API_KEY`
 - `PSFN_MODEL`
+- `PSFN_CHANNEL_TYPE` for the TypeScript hub channel header, defaulting to `psfn-satellite-hub`
 - optional `PSFN_AUTHOR_ID` and `PSFN_AUTHOR_NAME` if you need the hub to assert a specific PSFN-side author
 - `VOICE_REPLY_TIMEOUT_SECONDS`
 - `VOICE_ENDPOINTING_GRACE_SECONDS`

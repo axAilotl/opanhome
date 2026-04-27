@@ -16,6 +16,7 @@ export interface PsfnRuntimeConfig {
   model: string;
   baseUrl: string;
   apiKey?: string;
+  channelType: string;
 }
 
 export interface HubConfig {
@@ -88,10 +89,12 @@ export function loadPsfnRuntime(_projectRoot: string): PsfnRuntimeConfig {
   const baseUrl = required("PSFN_API_BASE_URL");
   const model = process.env.PSFN_MODEL?.trim() || "psfn";
   const apiKey = process.env.PSFN_API_KEY?.trim() || undefined;
+  const channelType = process.env.PSFN_CHANNEL_TYPE?.trim() || "psfn-satellite-hub";
   return {
     model,
     baseUrl,
     apiKey,
+    channelType,
   };
 }
 

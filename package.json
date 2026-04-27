@@ -8,6 +8,8 @@
     "hub:ts": "tsx src/ts/hub/main.ts",
     "pi:ts": "tsx src/ts/pi-client/main.ts",
     "smoke:ts": "node scripts/smoke-ts-hub.mjs",
+    "shell:psfn": "node scripts/psfn-thin-shell.mjs",
+    "test:ts": "npm run build:ts && node --test dist/ts/**/*.test.js",
     "check:ts": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

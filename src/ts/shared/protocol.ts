@@ -1,6 +1,7 @@
 export type ClientToHubMessage =
   | HelloMessage
   | AudioMessage
+  | UserTextMessage
   | TextSignalMessage
   | PingMessage
   | InterruptMessage
@@ -30,11 +31,21 @@ export interface HelloMessage {
   deviceId: string;
   deviceName: string;
   sessionId?: string;
+  channelId?: string;
+  satelliteId?: string;
+  satelliteName?: string;
+  capabilities?: SatelliteCapabilities;
 }
 
 export interface AudioMessage {
   type: "audio";
   audio: string;
+}
+
+export interface UserTextMessage {
+  type: "user.text";
+  text: string;
+  interrupt?: boolean;
 }
 
 export interface TextSignalMessage {
@@ -81,16 +92,22 @@ export interface TurnEndMessage {
 export interface SessionReadyMessage {
   type: "session.ready";
   sessionId: string;
+  channelId: string;
   deviceId: string;
   deviceName: string;
+  satelliteId: string;
   audioFormat: string;
 }
 
 export interface HelloAckMessage {
   type: "hello.ack";
   sessionId: string;
+  channelId: string;
   deviceId: string;
   deviceName: string;
+  satelliteId: string;
+  satelliteName: string;
+  capabilities: SatelliteCapabilities;
 }
 
 export interface StatusMessage {
@@ -165,6 +182,43 @@ export interface AssistantInterruptedCompatMessage {
 export interface PongMessage {
   type: "pong";
   sentAt: number;
+}
+
+export type SatelliteInputCapability =
+  | "text"
+  | "microphone_pcm"
+  | "final_transcript"
+  | "vision_upload"
+  | "wake_event";
+
+export type SatelliteOutputCapability =
+  | "text"
+  | "subtitle"
+  | "streamed_audio"
+  | "local_file_audio"
+  | "animation"
+  | "action"
+  | "expression"
+  | "gaze"
+  | "servo";
+
+export type SatelliteControlCapability =
+  | "interrupt"
+  | "mute"
+  | "sleep_wake"
+  | "presence"
+  | "session_attach";
+
+export type SatelliteSafetyCapability =
+  | "action_allowlist"
+  | "confirmation_required"
+  | "local_only";
+
+export interface SatelliteCapabilities {
+  input?: SatelliteInputCapability[];
+  output?: SatelliteOutputCapability[];
+  control?: SatelliteControlCapability[];
+  safety?: SatelliteSafetyCapability[];
 }
 
 export function encodeAudioChunk(chunk: Buffer): string {

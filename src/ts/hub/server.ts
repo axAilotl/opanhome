@@ -9,6 +9,7 @@ import {
   encodeAudioChunk,
   type ClientToHubMessage,
   type HubToClientMessage,
+  type SatelliteCapabilities,
 } from "../shared/protocol.js";
 import {
   appendEvent,
@@ -25,6 +26,11 @@ import {
 } from "./deepgram-live.js";
 import { ElevenLabsStream } from "./elevenlabs-stream.js";
 import { PsfnModelAdapter } from "./psfn-model.js";
+import {
+  canReceiveStreamingAudio,
+  DEFAULT_REALTIME_CAPABILITIES,
+  EmbodiedSessionRegistry,
+} from "./embodied-session.js";
 import { SessionStore } from "./session-store.js";
 import {
   sanitizeSpokenText,
@@ -40,11 +46,13 @@ export class RealtimeHubServer {
 
   private readonly wsServer = new WebSocketServer({ server: this.httpServer });
   private readonly sessions: SessionStore;
+  private readonly embodiedSessions: EmbodiedSessionRegistry;
   private readonly agent: PsfnModelAdapter;
   private readonly tts: ElevenLabsStream;
 
   constructor(private readonly config: HubConfig) {
     this.sessions = new SessionStore(config.sessionTtlSeconds);
+    this.embodiedSessions = new EmbodiedSessionRegistry(config.psfn.channelType);
     this.agent = new PsfnModelAdapter(config.psfn);
     this.tts = new ElevenLabsStream(
       config.elevenlabsApiKey,
@@ -55,7 +63,14 @@ export class RealtimeHubServer {
 
   async start(): Promise<void> {
     this.wsServer.on("connection", (socket) => {
-      const connection = new RealtimeConnection(socket, this.config, this.sessions, this.agent, this.tts);
+      const connection = new RealtimeConnection(
+        socket,
+        this.config,
+        this.sessions,
+        this.embodiedSessions,
+        this.agent,
+        this.tts,
+      );
       connection.run().catch((error) => {
         console.error("Realtime connection failed:", error);
       });
@@ -81,6 +96,10 @@ class RealtimeConnection {
   private deviceId = `client-${Math.random().toString(16).slice(2, 10)}`;
   private deviceName = "Opanhome TS Client";
   private sessionId = `realtime:${this.deviceId}`;
+  private channelId = "";
+  private satelliteId = this.deviceId;
+  private satelliteName = this.deviceName;
+  private capabilities: Required<SatelliteCapabilities> = DEFAULT_REALTIME_CAPABILITIES;
   private activeTurn: ArtifactTurn | null = null;
   private sttSession: DeepgramRealtimeSession | null = null;
   private replyAbort = false;
@@ -92,9 +111,12 @@ class RealtimeConnection {
     private readonly socket: WebSocket,
     private readonly config: HubConfig,
     private readonly sessions: SessionStore,
+    private readonly embodiedSessions: EmbodiedSessionRegistry,
     private readonly agent: PsfnModelAdapter,
     private readonly tts: ElevenLabsStream,
-  ) {}
+  ) {
+    this.attachSatellite();
+  }
 
   async run(): Promise<void> {
     this.socket.on("message", (raw) => {
@@ -138,8 +160,10 @@ class RealtimeConnection {
     await this.send({
       type: "session.ready",
       sessionId: this.sessionId,
+      channelId: this.channelId,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
+      satelliteId: this.satelliteId,
       audioFormat: "pcm_s16le_16000_mono_in/mp3_44100_out",
     });
   }
@@ -150,13 +174,20 @@ class RealtimeConnection {
         this.deviceId = message.deviceId;
         this.deviceName = message.deviceName;
         this.sessionId = message.sessionId?.trim() || `realtime:${this.deviceId}`;
+        this.satelliteId = message.satelliteId?.trim() || this.deviceId;
+        this.satelliteName = message.satelliteName?.trim() || this.deviceName;
+        this.attachSatellite(message.channelId, message.capabilities);
         this.sessions.touch(this.sessionId);
         console.log(`hello device=${this.deviceId} session=${this.sessionId}`);
         await this.send({
           type: "hello.ack",
           sessionId: this.sessionId,
+          channelId: this.channelId,
           deviceId: this.deviceId,
           deviceName: this.deviceName,
+          satelliteId: this.satelliteId,
+          satelliteName: this.satelliteName,
+          capabilities: this.capabilities,
         });
         await this.send({
           type: "status",
@@ -179,6 +210,9 @@ class RealtimeConnection {
       case "text":
         await this.handleTextSignal(message.data);
         return;
+      case "user.text":
+        await this.handleUserText(message);
+        return;
       case "audio":
         await this.handleAudio(decodeAudioChunk(message.audio));
         return;
@@ -191,6 +225,70 @@ class RealtimeConnection {
           data: { message: `Unsupported message type: ${String((message as { type?: string }).type || "")}` },
         });
     }
+  }
+
+  private async handleUserText(
+    message: Extract<ClientToHubMessage, { type: "user.text" }>,
+  ): Promise<void> {
+    const userText = message.text.trim();
+    if (!userText) {
+      await this.send({
+        type: "error-event",
+        data: { message: "Typed user text is empty" },
+      });
+      return;
+    }
+    if (message.interrupt !== false) {
+      await this.cancelReply("typed_user_text");
+    } else if (this.replyTask && !this.replyAbort) {
+      await this.send({
+        type: "error-event",
+        data: { message: "Assistant reply already in progress" },
+      });
+      return;
+    }
+
+    if (this.activeTurn) {
+      appendEvent(this.activeTurn, "turn.cancel", { reason: "typed_user_text" });
+      this.activeTurn = null;
+    }
+
+    const turn = createArtifactTurn(this.config.artifactsRoot, this.sessionId);
+    appendEvent(turn, "start", {
+      inputMode: "text",
+      sessionId: this.sessionId,
+      channelId: this.channelId,
+      satelliteId: this.satelliteId,
+      turnId: turn.turnId,
+    });
+    appendEvent(turn, "transcript", {
+      text: userText,
+      provider: "typed",
+      latencyMs: 0,
+    });
+    writeJson(turn.transcriptPath, {
+      text: userText,
+      provider: "typed",
+      latencyMs: 0,
+    });
+
+    await this.send({
+      type: "message",
+      data: {
+        role: "user",
+        content: userText,
+        final: true,
+      },
+    });
+
+    this.sessions.append(this.sessionId, { role: "user", content: userText });
+    const task = this.runReply(turn, userText);
+    this.replyTask = task;
+    await task.finally(() => {
+      if (this.replyTask === task) {
+        this.replyTask = null;
+      }
+    });
   }
 
   private async handleTextSignal(signal: string): Promise<void> {
@@ -343,9 +441,10 @@ class RealtimeConnection {
     const replyId = ++this.replySequence;
     this.replyAbort = false;
     let responseText = "";
-    const audioSegmentQueue = new AsyncQueue<string>();
+    const shouldStreamAudio = canReceiveStreamingAudio(this.capabilities);
+    const audioSegmentQueue = shouldStreamAudio ? new AsyncQueue<string>() : null;
 
-    const audioTask = (async () => {
+    const audioTask: Promise<void> = shouldStreamAudio && audioSegmentQueue ? (async () => {
       for await (const segmentText of audioSegmentQueue) {
         if (this.replyAbort || replyId !== this.replySequence) {
           break;
@@ -376,7 +475,7 @@ class RealtimeConnection {
           });
         }
       }
-    })();
+    })() : Promise.resolve();
 
     try {
       let pendingAudioText = "";
@@ -385,13 +484,13 @@ class RealtimeConnection {
         userText: transcript,
         conversationId: this.sessionId,
         history: this.sessions.getHistory(this.sessionId),
+        channel: this.embodiedSessions.getContext(this.sessionId, this.satelliteId),
       });
       for await (const delta of stream) {
         if (this.replyAbort || replyId !== this.replySequence) {
           break;
         }
         responseText += delta;
-        pendingAudioText += delta;
         await this.send({
           type: "message",
           data: {
@@ -400,23 +499,26 @@ class RealtimeConnection {
             live: true,
           },
         });
-        while (true) {
-          const { flushText, remainder } = takeFlushChunk(pendingAudioText, {
-            hasStarted: audioHasStarted,
-            ...SPOKEN_SEGMENT_FLUSH_OPTIONS,
-          });
-          pendingAudioText = remainder;
-          if (!flushText) {
-            break;
+        if (audioSegmentQueue) {
+          pendingAudioText += delta;
+          while (true) {
+            const { flushText, remainder } = takeFlushChunk(pendingAudioText, {
+              hasStarted: audioHasStarted,
+              ...SPOKEN_SEGMENT_FLUSH_OPTIONS,
+            });
+            pendingAudioText = remainder;
+            if (!flushText) {
+              break;
+            }
+            audioSegmentQueue.push(flushText);
+            audioHasStarted = true;
           }
-          audioSegmentQueue.push(flushText);
-          audioHasStarted = true;
         }
       }
-      if (pendingAudioText.trim()) {
+      if (audioSegmentQueue && pendingAudioText.trim()) {
         audioSegmentQueue.push(pendingAudioText.trim());
       }
-      audioSegmentQueue.close();
+      audioSegmentQueue?.close();
       await audioTask;
 
       if (this.replyAbort || replyId !== this.replySequence) {
@@ -443,7 +545,7 @@ class RealtimeConnection {
         },
       });
     } catch (error) {
-      audioSegmentQueue.close();
+      audioSegmentQueue?.close();
       await audioTask.catch(() => undefined);
       writeJson(turn.replyPath, {
         sessionId: this.sessionId,
@@ -508,6 +610,18 @@ class RealtimeConnection {
       return;
     }
     this.socket.send(JSON.stringify(message));
+  }
+
+  private attachSatellite(channelId?: string, capabilities?: SatelliteCapabilities): void {
+    const attachment = this.embodiedSessions.attachSatellite({
+      sessionId: this.sessionId,
+      channelId,
+      satelliteId: this.satelliteId,
+      satelliteName: this.satelliteName,
+      capabilities,
+    });
+    this.channelId = attachment.session.channelId;
+    this.capabilities = attachment.satellite.capabilities;
   }
 }
 
