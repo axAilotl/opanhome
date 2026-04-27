@@ -24,7 +24,9 @@ import {
   type TranscriptInterim,
   type TranscriptResult,
 } from "./deepgram-live.js";
+import type { AgentRuntimeAdapter } from "./agent-runtime.js";
 import { ElevenLabsStream } from "./elevenlabs-stream.js";
+import { HermesApiModelAdapter } from "./hermes-api-model.js";
 import { PsfnModelAdapter } from "./psfn-model.js";
 import {
   canReceiveStreamingAudio,
@@ -47,13 +49,13 @@ export class RealtimeHubServer {
   private readonly wsServer = new WebSocketServer({ server: this.httpServer });
   private readonly sessions: SessionStore;
   private readonly embodiedSessions: EmbodiedSessionRegistry;
-  private readonly agent: PsfnModelAdapter;
+  private readonly agent: AgentRuntimeAdapter;
   private readonly tts: ElevenLabsStream;
 
   constructor(private readonly config: HubConfig) {
     this.sessions = new SessionStore(config.sessionTtlSeconds);
-    this.embodiedSessions = new EmbodiedSessionRegistry(config.psfn.channelType);
-    this.agent = new PsfnModelAdapter(config.psfn);
+    this.embodiedSessions = new EmbodiedSessionRegistry(resolveChannelType(config));
+    this.agent = createAgentRuntime(config);
     this.tts = new ElevenLabsStream(
       config.elevenlabsApiKey,
       config.elevenlabsModelId,
@@ -92,6 +94,32 @@ export class RealtimeHubServer {
   }
 }
 
+function createAgentRuntime(config: HubConfig): AgentRuntimeAdapter {
+  if (config.agentRuntime === "hermes") {
+    if (!config.hermes) {
+      throw new Error("Hermes runtime config is required when AGENT_RUNTIME=hermes");
+    }
+    return new HermesApiModelAdapter(config.hermes);
+  }
+  if (!config.psfn) {
+    throw new Error("PSFN runtime config is required when AGENT_RUNTIME=psfn");
+  }
+  return new PsfnModelAdapter(config.psfn);
+}
+
+function resolveChannelType(config: HubConfig): string {
+  if (config.agentRuntime === "hermes") {
+    if (!config.hermes) {
+      throw new Error("Hermes runtime config is required when AGENT_RUNTIME=hermes");
+    }
+    return config.hermes.channelType;
+  }
+  if (!config.psfn) {
+    throw new Error("PSFN runtime config is required when AGENT_RUNTIME=psfn");
+  }
+  return config.psfn.channelType;
+}
+
 class RealtimeConnection {
   private deviceId = `client-${Math.random().toString(16).slice(2, 10)}`;
   private deviceName = "Opanhome TS Client";
@@ -112,7 +140,7 @@ class RealtimeConnection {
     private readonly config: HubConfig,
     private readonly sessions: SessionStore,
     private readonly embodiedSessions: EmbodiedSessionRegistry,
-    private readonly agent: PsfnModelAdapter,
+    private readonly agent: AgentRuntimeAdapter,
     private readonly tts: ElevenLabsStream,
   ) {
     this.attachSatellite();

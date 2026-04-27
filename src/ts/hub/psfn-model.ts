@@ -1,5 +1,6 @@
 import type { ConversationMessage } from "./session-store.js";
 import type { PsfnChannelContext } from "./embodied-session.js";
+import type { AgentRuntimeAdapter } from "./agent-runtime.js";
 import type { PsfnRuntimeConfig } from "../shared/env.js";
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -7,7 +8,7 @@ const DEFAULT_SYSTEM_PROMPT =
   + "Do not use roleplay actions, stage directions, emotes, asterisks, markdown, narration, or scene-setting. "
   + "Do not call tools. Do not add preambles, summaries, or extra reassurance.";
 
-export class PsfnModelAdapter {
+export class PsfnModelAdapter implements AgentRuntimeAdapter {
   private readonly apiBaseUrl: string;
 
   constructor(private readonly runtime: PsfnRuntimeConfig) {

@@ -61,6 +61,8 @@ fi
 upsert_env "$project_env" "HERMES_AGENT_BACKEND" "gateway"
 upsert_env "$project_env" "HERMES_GATEWAY_HOME" "$hermes_home"
 upsert_env "$project_env" "HERMES_HOME" "$hermes_home"
+upsert_env "$project_env" "AGENT_RUNTIME" "hermes"
+upsert_env "$project_env" "HERMES_API_BASE_URL" "${HERMES_API_BASE_URL:-http://127.0.0.1:8642/v1}"
 
 cat <<EOF
 Global Hermes bridge bootstrap complete.
@@ -76,5 +78,6 @@ This repo will now use:
 Next:
 1. Set ESPHOME_HOST and any device-specific values in $project_env
 2. Override DEEPGRAM_API_KEY or ELEVENLABS_API_KEY in $project_env only if you do not want to use the values from $hermes_env
-3. Run: uv run hub run
+3. Enable API_SERVER_ENABLED=true in $hermes_env and start: hermes gateway
+4. Run the TS hub: npm run hub:ts
 EOF

@@ -79,6 +79,7 @@ Current intent:
 
 - make the voice loop feel fast and smooth enough for daily use
 - target the direct PSFN deployment first so the end-to-end path is real
+- keep Hermes available through its OpenAI-compatible API server when `AGENT_RUNTIME=hermes`
 - keep the bridge thin so this can stay a sidecar first
 - upstream only the smallest useful bridge seam later if it proves out
 
@@ -184,6 +185,7 @@ Runtime config comes from the project-local `.env`.
 
 Important settings for the TypeScript realtime path:
 
+- `AGENT_RUNTIME`, either `psfn` or `hermes`; defaults to `psfn`
 - `HUB_WS_URL`
 - `AUDIO_DEVICE_CARD`
 - `AUDIO_INPUT_DEVICE`
@@ -207,6 +209,10 @@ Important settings for the Python ESPHome fallback path:
 - `PSFN_API_KEY`
 - `PSFN_MODEL`
 - `PSFN_CHANNEL_TYPE` for the TypeScript hub channel header, defaulting to `psfn-satellite-hub`
+- `HERMES_API_BASE_URL` or `HERMES_API_SERVER_URL` for `AGENT_RUNTIME=hermes`, defaulting to `http://127.0.0.1:8642/v1`
+- `HERMES_API_KEY` or `API_SERVER_KEY` for Hermes API-server auth and stable `X-Hermes-Session-Id` continuation
+- `HERMES_MODEL` for the advertised Hermes API-server model, defaulting to `hermes-agent`
+- `HERMES_CHANNEL_TYPE` for the hub channel id prefix, defaulting to `hermes-agent`
 - optional `PSFN_AUTHOR_ID` and `PSFN_AUTHOR_NAME` if you need the hub to assert a specific PSFN-side author
 - `VOICE_REPLY_TIMEOUT_SECONDS`
 - `VOICE_ENDPOINTING_GRACE_SECONDS`
