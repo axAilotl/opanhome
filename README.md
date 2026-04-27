@@ -347,13 +347,13 @@ Fallback path:
 - `linux-voice-assistant`
 - ESP32-class endpoints speaking the ESPHome voice protocol
 
-The custom client protocol is documented in [docs/realtime-client-protocol.md](/mnt/samesung/ai/PSFN-Satellite-Hub/docs/realtime-client-protocol.md).
+The custom client protocol is documented in [docs/realtime-client-protocol.md](/mnt/samesung/ai/psfn-satellite-hub/docs/realtime-client-protocol.md).
 
 ## ESPHome Fallback Notes
 
 Natural follow-up and interrupt behavior on the ESPHome fallback path still depends on a patched `linux-voice-assistant` endpoint. The stock endpoint is good enough to expose the ESPHome voice transport, but it does not own interruption strongly enough for the behavior this bridge wants.
 
-The current patch in [patches/linux-voice-assistant-followup-interrupt.patch](/mnt/samesung/ai/PSFN-Satellite-Hub/patches/linux-voice-assistant-followup-interrupt.patch) does three important things:
+The current patch in [patches/linux-voice-assistant-followup-interrupt.patch](/mnt/samesung/ai/psfn-satellite-hub/patches/linux-voice-assistant-followup-interrupt.patch) does three important things:
 
 - adds speech-first barge-in detection knobs at the endpoint
 - turns wake-word and stop-word interrupts into explicit local `stop output now, then reopen mic` behavior
@@ -369,7 +369,7 @@ This is intentionally endpoint-local. Hermes itself still does not require a sou
 
 ## Pi Realtime Client
 
-The dedicated Pi-class TypeScript client lives under [src/ts/pi-client](/mnt/samesung/ai/PSFN-Satellite-Hub/src/ts/pi-client) with deploy assets under [client/ts_realtime](/mnt/samesung/ai/PSFN-Satellite-Hub/client/ts_realtime).
+The dedicated Pi-class TypeScript client lives under [src/ts/pi-client](/mnt/samesung/ai/psfn-satellite-hub/src/ts/pi-client) with deploy assets under [client/ts_realtime](/mnt/samesung/ai/psfn-satellite-hub/client/ts_realtime).
 
 It is the preferred path for devices that can afford a custom client, because it owns:
 
